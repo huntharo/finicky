@@ -20,21 +20,24 @@ import { isLegacyURLObject, legacyURLObjectToString } from "./legacyURLObject";
 import { FinickyURL } from "./FinickyURL";
 export { utilities };
 
-export function validateConfig(config: object): config is Config {
-  if (!config) {
-    console.error(
-      "Could not find configuration object, please check your config file and make sure it has a default export."
-    );
-    return false;
-  }
-
+// Validate the evaluated export with the same schema used by URL resolution.
+// Callback bodies depend on the real URL/opener and must not be probed here.
+export function assertValidConfig(config: unknown): asserts config is Config {
   try {
     ConfigSchema.parse(config);
+  } catch (ex) {
+    throw new Error(fromError(ex).toString());
+  }
+}
+
+export function validateConfig(config: object): config is Config {
+  try {
+    assertValidConfig(config);
     return true;
   } catch (ex) {
-    // Don't log parsing errors in test environment as they are expected
+    // Don't log parsing errors in test environment as they are expected.
     if (process.env.NODE_ENV !== "test") {
-      console.error(fromError(ex).toString());
+      console.error(String(ex));
     }
     return false;
   }
@@ -73,9 +76,9 @@ export function getConfigState(config: Config) {
     handlers: config.handlers?.length || 0,
     rewrites: config.rewrite?.length || 0,
     defaultBrowser:
-      resolveBrowser(config.defaultBrowser, new URL("https://example.com"), {
-        opener: null,
-      })?.name || "None",
+      typeof config.defaultBrowser === "function"
+        ? "Function"
+        : createBrowserConfig(config.defaultBrowser).name || "None",
   };
 }
 

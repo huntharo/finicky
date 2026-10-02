@@ -126,6 +126,7 @@
     if (configPath) {
         [menu addItemWithTitle:@"Edit config" action:@selector(editConfigAction:) keyEquivalent:@""];
         [menu addItem:[NSMenuItem separatorItem]];
+        free(configPath);
     }
 
     [menu addItemWithTitle:@"Quit" action:@selector(terminate:) keyEquivalent:@"q"];
@@ -359,5 +360,22 @@ void SetStatusItemError(bool hasError) {
     dispatch_async(dispatch_get_main_queue(), ^{
         BrowseAppDelegate *app = (BrowseAppDelegate *)[NSApp delegate];
         [app setErrorState:hasError];
+    });
+}
+
+void ApplyConfigOptions(bool keepRunning, bool showStatusItem) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        BrowseAppDelegate *app = (BrowseAppDelegate *)[NSApp delegate];
+        if (!app) return;
+        app.keepRunning = keepRunning;
+        app.showMenuItem = showStatusItem;
+        if (app.statusItem) {
+            [[NSStatusBar systemStatusBar] removeStatusItem:app.statusItem];
+            app.statusItem = nil;
+        }
+        if (showStatusItem && (keepRunning || !app.receivedURL)) {
+            // Refresh the menu too: a newly created config enables Edit config.
+            [app createStatusItem];
+        }
     });
 }

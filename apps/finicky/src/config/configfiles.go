@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/evanw/esbuild/pkg/api"
@@ -24,11 +25,19 @@ type ConfigFileWatcher struct {
 	configChangeNotify chan struct{}
 
 	// Cache manager
-	cache *ConfigCache
+	cache       *ConfigCache
+	bundleMu    sync.Mutex
+	cacheDirty  atomic.Bool
+	done        chan struct{}
+	initialPath string
+	initialInfo os.FileInfo
+	closed      bool
+	closeOnce   sync.Once
 
 	// Debounce rapid file-change events (e.g. editors that write twice)
-	debounceMu    sync.Mutex
-	debounceTimer *time.Timer
+	debounceMu       sync.Mutex
+	debounceTimer    *time.Timer
+	debounceSequence uint64
 }
 
 // NewConfigFileWatcher creates a new file watcher for configuration files
@@ -44,17 +53,45 @@ func NewConfigFileWatcher(customConfigPath string, namespace string, configChang
 		namespace:          namespace,
 		configChangeNotify: configChangeNotify,
 		cache:              NewConfigCache(),
+		done:               make(chan struct{}),
 	}
 
-	go cfw.StartWatching()
+	// Register an existing file before returning so immediate saves are observed.
+	if path, err := cfw.GetConfigPath(false); err == nil {
+		cfw.initialPath = path
+		cfw.initialInfo, _ = os.Stat(path)
+		if err := cfw.watchConfigFile(path); err != nil {
+			slog.Warn("Failed to watch config file", "path", path, "error", err)
+		}
+	}
+	go func() {
+		defer close(cfw.done)
+		if err := cfw.StartWatching(); err != nil {
+			cfw.debounceMu.Lock()
+			closed := cfw.closed
+			cfw.debounceMu.Unlock()
+			if !closed {
+				slog.Error("Configuration watcher stopped", "error", err)
+			}
+		}
+	}()
 
 	return cfw, nil
 }
 
 // TearDown closes the file watcher
 func (cfw *ConfigFileWatcher) TearDown() {
-	if cfw.watcher != nil {
+	cfw.closeOnce.Do(func() {
+		cfw.debounceMu.Lock()
+		cfw.closed = true
+		if cfw.debounceTimer != nil {
+			cfw.debounceTimer.Stop()
+		}
+		cfw.debounceMu.Unlock()
 		cfw.watcher.Close()
+	})
+	if cfw.done != nil {
+		<-cfw.done
 	}
 }
 
@@ -119,6 +156,11 @@ func (cfw *ConfigFileWatcher) GetConfigPath(log bool) (string, error) {
 }
 
 func (cfw *ConfigFileWatcher) BundleConfig() (string, string, error) {
+	cfw.bundleMu.Lock()
+	defer cfw.bundleMu.Unlock()
+	if cfw.cacheDirty.Swap(false) {
+		cfw.cache.Clear()
+	}
 	configPath, err := cfw.GetConfigPath(true)
 
 	if configPath == "" || err != nil {
@@ -232,88 +274,120 @@ func (cfw *ConfigFileWatcher) babelTransform(configPath string) (string, error) 
 	return transformedPath, nil
 }
 
+// Config discovery may find a directory at a candidate path. Never register
+// a directory with fsnotify: kqueue would open unrelated immediate children.
+func (cfw *ConfigFileWatcher) watchConfigFile(path string) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("config path is not a regular file: %s", path)
+	}
+	return cfw.watcher.Add(path)
+}
+
 func (cfw *ConfigFileWatcher) StartWatching() error {
+	poll := time.NewTicker(500 * time.Millisecond)
+	defer poll.Stop()
+	previousPath, previousInfo := cfw.initialPath, cfw.initialInfo
+	if previousInfo == nil {
+		if path, err := cfw.GetConfigPath(false); err == nil {
+			previousPath = path
+			previousInfo, _ = os.Stat(path)
+		}
+	}
 	for {
 		configPath, err := cfw.GetConfigPath(false)
 
+		// Drop stale inode watches before switching discovery paths or polling.
+		for _, watched := range cfw.watcher.WatchList() {
+			if err != nil || watched != configPath {
+				cfw.watcher.Remove(watched)
+			}
+		}
 		if err != nil {
+			if previousInfo != nil {
+				cfw.handleConfigFileEvent(fsnotify.Event{Name: previousPath, Op: fsnotify.Remove})
+			}
+			previousPath = ""
+			previousInfo = nil
 			configPath, err = cfw.waitForConfig()
 			if err != nil {
 				return err
 			}
+
 			if err := cfw.handleConfigFileEvent(fsnotify.Event{Name: configPath, Op: fsnotify.Create}); err != nil {
 				return err
 			}
 
 		} else {
-			slog.Debug("Watching config file", "path", configPath)
-
-			cfw.watcher.Add(configPath)
-
+			info, statErr := os.Stat(configPath)
+			if statErr != nil {
+				continue
+			}
+			// The inode changes during atomic saves; timestamps/size cover ordinary
+			// writes if the platform fails to deliver a write event.
+			if previousInfo == nil || previousPath != configPath || !os.SameFile(previousInfo, info) ||
+				!previousInfo.ModTime().Equal(info.ModTime()) || previousInfo.Size() != info.Size() {
+				cfw.watcher.Remove(configPath)
+				cfw.handleConfigFileEvent(fsnotify.Event{Name: configPath, Op: fsnotify.Write})
+			}
+			previousPath, previousInfo = configPath, info
+			if err := cfw.watchConfigFile(configPath); err != nil {
+				slog.Warn("Failed to watch config file; using polling", "path", configPath, "error", err)
+			}
 			select {
 			case event, ok := <-cfw.watcher.Events:
 				if !ok {
-					return fmt.Errorf("watcher closed")
+					return nil
 				}
-				err := cfw.handleConfigFileEvent(event)
-				if err != nil {
-					return err
+				cfw.handleConfigFileEvent(event)
+				if event.Has(fsnotify.Remove) || event.Has(fsnotify.Rename) {
+					cfw.watcher.Remove(configPath)
 				}
 			case err, ok := <-cfw.watcher.Errors:
 				if !ok {
-					return fmt.Errorf("watcher closed")
+					return nil
 				}
-				slog.Debug("error:", "error", err)
+				slog.Error("Configuration watcher error", "error", err)
+			case <-poll.C:
 			}
+
 		}
 	}
 	// Unreachable - infinite loop above. Added for completeness only.
 	// return nil
 }
 
-// handleConfigFileEvent processes configuration file events and takes appropriate actions
-// Returns an error if the configuration file was removed
+// handleConfigFileEvent invalidates bundles for every content/identity change.
+// Removal is recoverable: continue discovery and retain the active VM.
 func (cfw *ConfigFileWatcher) handleConfigFileEvent(event fsnotify.Event) error {
-	// Ignore CHMOD-only events (permission changes) as they don't affect config content
-	// Note: Some editors may send CHMOD along with WRITE, so we only ignore pure CHMOD
-	if event.Op == fsnotify.Chmod {
+	if event.Op&(fsnotify.Create|fsnotify.Write|fsnotify.Remove|fsnotify.Rename) == 0 {
 		return nil
 	}
-
-	if event.Has(fsnotify.Create) {
-		slog.Debug("Configuration file created", "path", event.Name)
+	cfw.cacheDirty.Store(true)
+	cfw.debounceMu.Lock()
+	defer cfw.debounceMu.Unlock()
+	if cfw.closed {
+		return nil
 	}
-
-	if event.Has(fsnotify.Write) {
-		slog.Debug("Configuration file changed", "path", event.Name)
-		// Clear the cache when config changes
-		cfw.cache.Clear()
+	if cfw.debounceTimer != nil {
+		cfw.debounceTimer.Stop()
 	}
-
-	if event.Has(fsnotify.Remove) {
-		slog.Debug("Configuration file removed", "path", event.Name)
-		// Clear the cache when config is removed
-		cfw.cache.Clear()
+	cfw.debounceSequence++
+	sequence := cfw.debounceSequence
+	cfw.debounceTimer = time.AfterFunc(500*time.Millisecond, func() {
+		cfw.debounceMu.Lock()
+		defer cfw.debounceMu.Unlock()
+		if cfw.closed || sequence != cfw.debounceSequence {
+			return
+		}
 		select {
 		case cfw.configChangeNotify <- struct{}{}:
 		default:
 		}
-		return fmt.Errorf("configuration file removed")
-	}
-
-	// Debounce: reset the timer so only the last event in a burst fires.
-	cfw.debounceMu.Lock()
-	if cfw.debounceTimer != nil {
-		cfw.debounceTimer.Stop()
-	}
-	notify := cfw.configChangeNotify
-	cfw.debounceTimer = time.AfterFunc(500*time.Millisecond, func() {
-		select {
-		case notify <- struct{}{}:
-		default: // drop if a notification is already pending
-		}
 	})
-	cfw.debounceMu.Unlock()
 	return nil
 }
 

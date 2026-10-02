@@ -107,12 +107,8 @@ func (vm *VM) setup(apiContent []byte, content []byte) error {
 
 	vm.runtime.Set("finalConfig", finalConfig)
 
-	validConfig, err := vm.runtime.RunString("finickyConfigAPI.validateConfig(finalConfig)")
-	if err != nil {
-		return fmt.Errorf("failed to validate config: %v", err)
-	}
-	if !validConfig.ToBoolean() {
-		return fmt.Errorf("configuration is invalid")
+	if _, err := vm.runtime.RunString("finickyConfigAPI.assertValidConfig(finalConfig)"); err != nil {
+		return fmt.Errorf("failed to validate config: %w", err)
 	}
 
 	return nil

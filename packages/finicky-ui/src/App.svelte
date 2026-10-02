@@ -25,6 +25,7 @@
 
   // Configuration state
   let hasConfig = false;
+  let configError = "";
   let config: ConfigInfo = { configPath: "" };
   // Initialize message buffer
   let messageBuffer: LogEntry[] = [];
@@ -56,6 +57,9 @@
         }
         break;
 
+      case "configError":
+        configError = parsedMsg.message?.error ?? "";
+        break;
       case "updateInfo":
         updateInfo = parsedMsg.message;
         break;
@@ -117,6 +121,13 @@
       <TabBar {numErrors} />
       <div class="container">
         <div class="content">
+          {#if configError}
+            <div class="config-error" role="alert">
+              <strong>Configuration could not be loaded.</strong>
+              {#if hasConfig}<p>Finicky is using the last working configuration.</p>{/if}
+              <pre>{configError}</pre>
+            </div>
+          {/if}
           <Route path="/">
             <StartPage
               {hasConfig}
@@ -205,6 +216,16 @@
     overflow-y: auto;
     scrollbar-gutter: stable;
   }
+
+  .config-error {
+    border: 1px solid var(--log-error);
+    border-radius: 4px;
+    padding: 0.75rem;
+    margin-bottom: 1rem;
+  }
+
+  .config-error p { margin: 0.5rem 0; }
+  .config-error pre { white-space: pre-wrap; overflow-wrap: anywhere; }
 
   .footer {
     display: flex;
