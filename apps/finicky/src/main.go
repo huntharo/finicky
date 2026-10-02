@@ -58,6 +58,7 @@ var vm *config.VM
 var forceWindowOpen bool = false
 var queueWindowOpen chan bool = make(chan bool)
 var lastError error
+var configReloadError error
 var dryRun bool = false
 var skipJSConfig bool = false
 var updateInfo UpdateInfo
@@ -120,12 +121,12 @@ func main() {
 	cfw, err := config.NewConfigFileWatcher(customConfigPath, namespace, configChange)
 
 	if err != nil {
-		handleFatalError(fmt.Sprintf("Failed to setup config file watcher: %v", err))
-	}
-
-	vm, err = setupVM(cfw, namespace)
-	if err != nil {
-		handleFatalError(err.Error())
+		reportConfigError(fmt.Errorf("failed to setup config file watcher: %w", err))
+	} else {
+		defer cfw.TearDown()
+		if err = reloadConfig(cfw, namespace); err != nil {
+			reportConfigError(err)
+		}
 	}
 
 	slog.Debug("VM setup complete", "duration", fmt.Sprintf("%.2fms", float64(time.Since(startTime).Microseconds())/1000))
@@ -194,7 +195,8 @@ func main() {
 				if err != nil {
 					handleRuntimeError(err)
 				} else {
-					lastError = nil
+					lastError = configReloadError
+					C.SetStatusItemError(C.bool(configReloadError != nil))
 				}
 				if launchErr := browser.LaunchBrowser(*config, dryRun, urlInfo.OpenInBackground); launchErr != nil {
 					slog.Error("Failed to start browser", "error", launchErr)
@@ -210,20 +212,19 @@ func main() {
 
 			case <-configChange:
 				startTime := time.Now()
-				var setupErr error
 				slog.Debug("Config has changed")
-				vm, setupErr = setupVM(cfw, namespace)
-				if setupErr != nil {
-					handleRuntimeError(setupErr)
+				if setupErr := reloadConfig(cfw, namespace); setupErr != nil {
+					reportConfigError(setupErr)
 				} else {
-					lastError = nil
-					C.SetStatusItemError(false)
-				}
-				slog.Debug("VM refresh complete", "duration", fmt.Sprintf("%.2fms", float64(time.Since(startTime).Microseconds())/1000))
-				if vm != nil {
-					shouldKeepRunning = vm.GetAllConfigOptions().KeepRunning
+					reportConfigError(nil)
+					if shouldKeepRunning || showingWindow {
+						timeoutChan = nil
+					} else {
+						timeoutChan = time.After(2 * time.Second)
+					}
 					go checkForUpdates()
 				}
+				slog.Debug("VM refresh complete", "duration", fmt.Sprintf("%.2fms", float64(time.Since(startTime).Microseconds())/1000))
 
 			case shouldShowWindow := <-queueWindowOpen:
 				if !showingWindow && shouldShowWindow {
@@ -408,32 +409,16 @@ func tearDown() {
 	os.Exit(0)
 }
 
-func setupVM(cfw *config.ConfigFileWatcher, namespace string) (*config.VM, error) {
-	logRequests := true
+func setupVM(cfw *config.ConfigFileWatcher, namespace string) (*config.VM, *ConfigInfo, error) {
 	var err error
-
-	defer func() {
-		err = logger.SetupFile(logRequests)
-		if err != nil {
-			slog.Warn("Failed to setup file logging", "error", err)
-		}
-	}()
 
 	var currentBundlePath, configPath string
 	if !skipJSConfig {
 		var err2 error
 		currentBundlePath, configPath, err2 = cfw.BundleConfig()
 		if err2 != nil {
-			return nil, fmt.Errorf("failed to read config: %v", err2)
+			return nil, nil, fmt.Errorf("failed to read config: %v", err2)
 		}
-	}
-
-	// Always seed the cached rules from disk so JSON rules are applied
-	// immediately on startup, even when a JS config is also present.
-	if rf, rulesErr := rules.Load(); rulesErr != nil {
-		slog.Warn("Failed to pre-load rules cache", "error", rulesErr)
-	} else {
-		resolver.SetCachedRules(rf)
 	}
 
 	var newVM *config.VM
@@ -441,22 +426,21 @@ func setupVM(cfw *config.ConfigFileWatcher, namespace string) (*config.VM, error
 	if currentBundlePath != "" {
 		newVM, err = config.New(finickyConfigAPIJS, namespace, currentBundlePath)
 		if err != nil {
-			return nil, fmt.Errorf("failed to setup VM: %v", err)
+			return nil, nil, fmt.Errorf("failed to setup VM: %v", err)
 		}
 	} else {
 		rf, rulesErr := rules.Load()
 		if rulesErr != nil {
 			slog.Warn("Failed to load rules file", "error", rulesErr)
 		} else {
-			resolver.SetCachedRules(rf)
 			if rf.DefaultBrowser != "" || len(rf.Rules) > 0 {
 				script, scriptErr := rules.ToJSConfigScript(rf, namespace)
 				if scriptErr != nil {
-					return nil, fmt.Errorf("failed to generate config from rules: %v", scriptErr)
+					return nil, nil, fmt.Errorf("failed to generate config from rules: %v", scriptErr)
 				}
 				newVM, err = config.NewFromScript(finickyConfigAPIJS, namespace, script)
 				if err != nil {
-					return nil, fmt.Errorf("failed to setup VM from rules: %v", err)
+					return nil, nil, fmt.Errorf("failed to setup VM from rules: %v", err)
 				}
 				configPath, _ = rules.GetPath()
 			}
@@ -464,28 +448,50 @@ func setupVM(cfw *config.ConfigFileWatcher, namespace string) (*config.VM, error
 	}
 
 	if newVM == nil {
-		return nil, nil
+		return nil, nil, nil
 	}
 
 	cs := newVM.GetConfigState()
-	if cs != nil {
-		configInfo = &ConfigInfo{
-			Handlers:       cs.Handlers,
-			Rewrites:       cs.Rewrites,
-			DefaultBrowser: cs.DefaultBrowser,
-			ConfigPath:     configPath,
-		}
+	if cs == nil {
+		return nil, nil, fmt.Errorf("failed to read config metadata")
 	}
+	return newVM, &ConfigInfo{
+		Handlers:       cs.Handlers,
+		Rewrites:       cs.Rewrites,
+		DefaultBrowser: cs.DefaultBrowser,
+		ConfigPath:     configPath,
+	}, nil
+}
 
-	opts := newVM.GetAllConfigOptions()
-	logRequests = opts.LogRequests
+// Build and validate in a separate runtime before changing any active state.
+func reloadConfig(cfw *config.ConfigFileWatcher, namespace string) error {
+	return applyConfigCandidate(setupVM(cfw, namespace))
+}
 
+func applyConfigCandidate(candidate *config.VM, info *ConfigInfo, err error) error {
+	if err != nil {
+		return err
+	}
+	vm = candidate
+	configInfo = info
+	opts := vm.GetAllConfigOptions()
+	shouldKeepRunning = opts.KeepRunning
+	C.ApplyConfigOptions(C.bool(opts.KeepRunning), C.bool(!opts.HideIcon))
+	if err := logger.SetupFile(opts.LogRequests); err != nil {
+		slog.Warn("Failed to setup file logging", "error", err)
+	}
+	if rf, err := rules.Load(); err == nil {
+		resolver.SetCachedRules(rf)
+	}
+	if vm == nil {
+		return nil
+	}
 	window.SendMessageToWebView("config", map[string]interface{}{
-		"handlers":       configInfo.Handlers,
-		"rewrites":       configInfo.Rewrites,
-		"defaultBrowser": configInfo.DefaultBrowser,
-		"configPath":     util.ShortenPath(configInfo.ConfigPath),
-		"isJSConfig":     newVM.IsJSConfig(),
+		"handlers":       info.Handlers,
+		"rewrites":       info.Rewrites,
+		"defaultBrowser": info.DefaultBrowser,
+		"configPath":     util.ShortenPath(info.ConfigPath),
+		"isJSConfig":     vm.IsJSConfig(),
 		"options": map[string]interface{}{
 			"keepRunning":     opts.KeepRunning,
 			"hideIcon":        opts.HideIcon,
@@ -493,6 +499,21 @@ func setupVM(cfw *config.ConfigFileWatcher, namespace string) (*config.VM, error
 			"checkForUpdates": opts.CheckForUpdates,
 		},
 	})
+	return nil
+}
 
-	return newVM, nil
+func reportConfigError(err error) {
+	configReloadError = err
+	lastError = err
+	message := ""
+	if err != nil {
+		message = err.Error()
+		if vm == nil {
+			slog.Error("Configuration could not be loaded", "error", err)
+		} else {
+			slog.Error("Configuration reload failed; keeping the last working configuration", "error", err)
+		}
+	}
+	C.SetStatusItemError(C.bool(err != nil))
+	window.SendMessageToWebView("configError", map[string]interface{}{"error": message})
 }

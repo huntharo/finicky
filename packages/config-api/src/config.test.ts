@@ -180,3 +180,22 @@ describe("openUrl", () => {
     });
   });
 });
+
+describe("candidate validation", () => {
+  it("reports the failing configuration field", async () => {
+    const { assertValidConfig } = await import("./index");
+    expect(() => assertValidConfig({
+      defaultBrowser: "Safari",
+      handlers: [{ match: 123, browser: "Firefox" }],
+    })).toThrow(/handlers/);
+  });
+
+  it("validates callbacks without running them for synthetic inputs", async () => {
+    const { assertValidConfig, getConfigState } = await import("./index");
+    const callback = vi.fn(() => { throw new Error("requires a real URL/opener"); });
+    const config = { defaultBrowser: callback };
+    expect(() => assertValidConfig(config)).not.toThrow();
+    expect(getConfigState(config).defaultBrowser).toBe("Function");
+    expect(callback).not.toHaveBeenCalled();
+  });
+});

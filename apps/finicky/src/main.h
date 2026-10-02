@@ -28,5 +28,6 @@ extern char* GetCurrentConfigPath();
 
 void RunApp(bool forceOpenWindow, bool showStatusItem, bool keepRunning);
 void SetStatusItemError(bool hasError);
+void ApplyConfigOptions(bool keepRunning, bool showStatusItem);
 
 #endif /* MAIN_H */
