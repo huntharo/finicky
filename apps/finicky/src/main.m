@@ -10,6 +10,7 @@
 // Extend BrowseAppDelegate to hold a status item and declare menu action
 @interface BrowseAppDelegate ()
 @property (nonatomic, strong) NSStatusItem *statusItem;
+@property (nonatomic) BOOL diagnosticsObservingWorkspace;
 - (void)showWindowAction:(id)sender;
 @end
 
@@ -28,7 +29,10 @@
 
 // Use bool for openWindow and related logic
 - (void)applicationDidFinishLaunching:(NSNotification *)notification {
+    RecordAppLifecycle("did_finish_launching", self.receivedURL);
+    RecordAppLifecycle("duplicate_scan_started", 0);
     [self terminateOtherInstances];
+    RecordAppLifecycle("duplicate_scan_finished", 0);
 
     bool openWindow = self.forceOpenWindow;
 
@@ -39,6 +43,7 @@
         [self createStatusItem];
     }
 
+    RecordAppLifecycle("window_reason_launch_flag", openWindow);
     QueueWindowDisplay(openWindow);
 }
 
@@ -65,6 +70,7 @@
         [duplicates addObject:app];
     }
 
+    RecordAppLifecycle("duplicate_count", (int)duplicates.count);
     if (duplicates.count == 0) {
         return;
     }
@@ -98,8 +104,10 @@
 }
 
 - (BOOL)applicationShouldHandleReopen:(NSApplication *)sender hasVisibleWindows:(BOOL)flag {
+    RecordAppLifecycle("reopen", flag);
     if (!flag) {
         // If there are no visible windows, we should open a new one
+        RecordAppLifecycle("window_reason_reopen", 0);
         [self showWindowAction:nil];
     }
     return YES;
@@ -221,6 +229,7 @@
 
 // Menu action to show the main window
 - (void)showWindowAction:(id)sender {
+    if (sender) RecordAppLifecycle("window_reason_menu", 0);
     ShowConfigWindow();
 }
 
@@ -239,8 +248,31 @@
     }
 }
 
+- (void)systemDidWake:(NSNotification *)notification {
+    RecordAppLifecycle("system_wake", 0);
+}
+
+- (void)systemWillSleep:(NSNotification *)notification {
+    RecordAppLifecycle("system_sleep", 0);
+}
+
+- (void)applicationDidBecomeActive:(NSNotification *)notification {
+    RecordAppLifecycle("became_active", 0);
+}
+
+- (void)applicationDidResignActive:(NSNotification *)notification {
+    RecordAppLifecycle("resigned_active", 0);
+}
+
 - (void)applicationWillFinishLaunching:(NSNotification *)aNotification
 {
+    RecordAppLifecycle("will_finish_launching", 0);
+    if (!self.diagnosticsObservingWorkspace) {
+        self.diagnosticsObservingWorkspace = YES;
+        NSNotificationCenter *workspaceNotifications = [[NSWorkspace sharedWorkspace] notificationCenter];
+        [workspaceNotifications addObserver:self selector:@selector(systemDidWake:) name:NSWorkspaceDidWakeNotification object:nil];
+        [workspaceNotifications addObserver:self selector:@selector(systemWillSleep:) name:NSWorkspaceWillSleepNotification object:nil];
+    }
     NSAppleEventManager *appleEventManager = [NSAppleEventManager sharedAppleEventManager];
     [appleEventManager setEventHandler:self
                     andSelector:@selector(handleGetURLEvent:withReplyEvent:)
@@ -250,14 +282,14 @@
 - (bool)application:(NSApplication *)sender openFile:(NSString *)filename {
     self.receivedURL = true;
 
-    NSLog(@"Opening file: %@", filename);
+    unsigned long long dispatchID = BeginURLDispatch("file");
 
     // Convert the file path to a file:// URL
     NSURL *fileURL = [NSURL fileURLWithPath:filename];
     NSString *urlString = [fileURL absoluteString];
 
     // Handle the file URL the same way we handle other URLs
-    HandleURL((char*)[urlString UTF8String], NULL, NULL, NULL, NULL, false);
+    HandleURL((char*)[urlString UTF8String], NULL, NULL, NULL, NULL, false, dispatchID);
 
     return true;
 }
@@ -265,6 +297,7 @@
 - (void)handleGetURLEvent:(NSAppleEventDescriptor *)event
         withReplyEvent:(NSAppleEventDescriptor *)replyEvent {
 
+    unsigned long long dispatchID = BeginURLDispatch("apple_event");
     // Get the application that opened the URL, if available
     int32_t pid = [[event attributeDescriptorForKeyword:keySenderPIDAttr] int32Value];
     NSRunningApplication *application = [NSRunningApplication runningApplicationWithProcessIdentifier:pid];
@@ -282,6 +315,7 @@
     bool finickyIsInFront =  !self.keepRunning || [frontApp isEqual:[NSRunningApplication currentApplication]];
 
     char *windowTitle = NULL;
+    MarkURLDispatch(dispatchID, "sender_lookup");
 
     if (application) {
         NSString *appName = [application localizedName];
@@ -292,14 +326,19 @@
         bundleId = [appBundleID UTF8String];
         path = [appPath UTF8String];
 
+        MarkURLDispatch(dispatchID, "sender_metadata");
         // Try to get the focused window title via Accessibility API
         AXUIElementRef appElement = AXUIElementCreateApplication(pid);
         if (appElement) {
             AXUIElementRef focusedWindow = NULL;
             AXError err = AXUIElementCopyAttributeValue(appElement, kAXFocusedWindowAttribute, (CFTypeRef *)&focusedWindow);
+            MarkURLDispatch(dispatchID, "accessibility_focus");
+            SetURLDispatchValue(dispatchID, "ax_focus_result", (int)err);
             if (err == kAXErrorSuccess && focusedWindow) {
                 CFTypeRef titleValue = NULL;
                 AXError titleErr = AXUIElementCopyAttributeValue(focusedWindow, kAXTitleAttribute, &titleValue);
+                MarkURLDispatch(dispatchID, "accessibility_title");
+                SetURLDispatchValue(dispatchID, "ax_title_result", (int)titleErr);
                 if (titleErr == kAXErrorSuccess && titleValue && CFGetTypeID(titleValue) == CFStringGetTypeID()) {
                     // strdup to keep a copy alive after CFRelease (no ARC in this project)
                     windowTitle = strdup([(NSString *)titleValue UTF8String]);
@@ -313,8 +352,9 @@
         NSLog(@"No running application found with PID: %d", pid);
     }
 
+    MarkURLDispatch(dispatchID, "accessibility_cleanup");
     // If Finicky isn't frontmost, we take that to mean that the browser should, by default, be opened in the background
-    HandleURL((char*)url, (char*)name, (char*)bundleId, (char*)path, windowTitle, !finickyIsInFront);
+    HandleURL((char*)url, (char*)name, (char*)bundleId, (char*)path, windowTitle, !finickyIsInFront, dispatchID);
     free(windowTitle);
 }
 
@@ -332,7 +372,8 @@
         return false;
     }
 
-    HandleURL((char*)[[url absoluteString] UTF8String], NULL, NULL, NULL, NULL, false);
+    unsigned long long dispatchID = BeginURLDispatch("user_activity");
+    HandleURL((char*)[[url absoluteString] UTF8String], NULL, NULL, NULL, NULL, false, dispatchID);
     return true;
 }
 

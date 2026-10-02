@@ -13,6 +13,7 @@ import (
 	"encoding/base64"
 	"finicky/browser"
 	"finicky/config"
+	"finicky/diagnostics"
 	"finicky/logger"
 	"finicky/resolver"
 	"finicky/rules"
@@ -25,6 +26,7 @@ import (
 	"os"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/dop251/goja"
@@ -39,6 +41,7 @@ type UpdateInfo struct {
 }
 
 type URLInfo struct {
+	Trace            *diagnostics.Trace
 	URL              string
 	Opener           *resolver.OpenerInfo
 	OpenInBackground bool
@@ -50,6 +53,8 @@ type ConfigInfo struct {
 	DefaultBrowser string
 	ConfigPath     string
 }
+
+var pendingDispatches sync.Map
 
 var urlListener chan URLInfo = make(chan URLInfo)
 var windowClosed chan struct{} = make(chan struct{})
@@ -117,17 +122,21 @@ func main() {
 
 	namespace := "finickyConfig"
 	configChange := make(chan struct{}, 1)
+	watcherStart := time.Now()
 	cfw, err := config.NewConfigFileWatcher(customConfigPath, namespace, configChange)
 
 	if err != nil {
 		handleFatalError(fmt.Sprintf("Failed to setup config file watcher: %v", err))
 	}
 
+	watcherMS := float64(time.Since(watcherStart).Microseconds()) / 1000
+	configStart := time.Now()
 	vm, err = setupVM(cfw, namespace)
 	if err != nil {
 		handleFatalError(err.Error())
 	}
 
+	slog.Info("Startup timing", "pid", os.Getpid(), "watcher_ms", watcherMS, "config_setup_ms", float64(time.Since(configStart).Microseconds())/1000, "go_age_ms", diagnostics.AgeMS())
 	slog.Debug("VM setup complete", "duration", fmt.Sprintf("%.2fms", float64(time.Since(startTime).Microseconds())/1000))
 
 	go checkForUpdates()
@@ -185,20 +194,26 @@ func main() {
 			select {
 			case urlInfo := <-urlListener:
 				startTime := time.Now()
+				urlInfo.Trace.Mark("queue")
 
 				url := urlInfo.URL
 
-				slog.Info("URL received", "url", url)
+				slog.Debug("URL dequeued", "dispatch_id", urlInfo.Trace.ID)
 
-				config, err := resolver.ResolveURL(vm, url, urlInfo.Opener, urlInfo.OpenInBackground)
+				config, err := resolver.ResolveURLWithTrace(vm, url, urlInfo.Opener, urlInfo.OpenInBackground, urlInfo.Trace)
 				if err != nil {
 					handleRuntimeError(err)
 				} else {
 					lastError = nil
 				}
-				if launchErr := browser.LaunchBrowser(*config, dryRun, urlInfo.OpenInBackground); launchErr != nil {
+				urlInfo.Trace.Mark("resolve_result")
+				launchErr := browser.LaunchBrowserWithTrace(*config, dryRun, urlInfo.OpenInBackground, urlInfo.Trace)
+				if launchErr != nil {
 					slog.Error("Failed to start browser", "error", launchErr)
 				}
+
+				urlInfo.Trace.Mark("handoff_result")
+				urlInfo.Trace.Finish(dryRun, err != nil, launchErr != nil)
 
 				slog.Debug("Time taken evaluating URL and opening browser", "duration", fmt.Sprintf("%.2fms", float64(time.Since(startTime).Microseconds())/1000))
 
@@ -211,6 +226,7 @@ func main() {
 			case <-configChange:
 				startTime := time.Now()
 				var setupErr error
+				diagnostics.Event("config_reload_started", 0)
 				slog.Debug("Config has changed")
 				vm, setupErr = setupVM(cfw, namespace)
 				if setupErr != nil {
@@ -219,6 +235,7 @@ func main() {
 					lastError = nil
 					C.SetStatusItemError(false)
 				}
+				diagnostics.Event("config_reload_finished", 0)
 				slog.Debug("VM refresh complete", "duration", fmt.Sprintf("%.2fms", float64(time.Since(startTime).Microseconds())/1000))
 				if vm != nil {
 					shouldKeepRunning = vm.GetAllConfigOptions().KeepRunning
@@ -259,13 +276,46 @@ func main() {
 }
 
 func handleRuntimeError(err error) {
-	slog.Error("Failed evaluating url", "error", err)
+	slog.Error("Failed evaluating URL", "error_type", fmt.Sprintf("%T", err))
 	lastError = err
 	C.SetStatusItemError(true)
 }
 
+//export BeginURLDispatch
+func BeginURLDispatch(source *C.char) C.ulonglong {
+	trace := diagnostics.Begin(C.GoString(source))
+	pendingDispatches.Store(trace.ID, trace)
+	return C.ulonglong(trace.ID)
+}
+
+//export MarkURLDispatch
+func MarkURLDispatch(id C.ulonglong, stage *C.char) {
+	if trace, ok := pendingDispatches.Load(uint64(id)); ok {
+		trace.(*diagnostics.Trace).Mark(C.GoString(stage))
+	}
+}
+
+//export SetURLDispatchValue
+func SetURLDispatchValue(id C.ulonglong, key *C.char, value C.int) {
+	if trace, ok := pendingDispatches.Load(uint64(id)); ok {
+		trace.(*diagnostics.Trace).Value(C.GoString(key), int(value))
+	}
+}
+
+//export RecordAppLifecycle
+func RecordAppLifecycle(event *C.char, value C.int) {
+	diagnostics.Event(C.GoString(event), int(value))
+}
+
 //export HandleURL
-func HandleURL(url *C.char, name *C.char, bundleId *C.char, path *C.char, windowTitle *C.char, openInBackground C.bool) {
+func HandleURL(url *C.char, name *C.char, bundleId *C.char, path *C.char, windowTitle *C.char, openInBackground C.bool, dispatchID C.ulonglong) {
+	var trace *diagnostics.Trace
+	if traceValue, ok := pendingDispatches.LoadAndDelete(uint64(dispatchID)); ok {
+		trace = traceValue.(*diagnostics.Trace)
+	} else {
+		// Diagnostics must never prevent dispatch when an ID is unavailable.
+		trace = diagnostics.Begin("unknown")
+	}
 	var opener resolver.OpenerInfo
 
 	if name != nil && bundleId != nil && path != nil {
@@ -286,13 +336,15 @@ func HandleURL(url *C.char, name *C.char, bundleId *C.char, path *C.char, window
 		encodedURL := strings.TrimPrefix(urlString, "finicky://open/")
 		if decodedBytes, err := base64.StdEncoding.DecodeString(encodedURL); err == nil {
 			urlString = string(decodedBytes)
-			slog.Debug("Decoded finicky protocol URL", "original", C.GoString(url), "decoded", urlString)
+			slog.Debug("Decoded finicky protocol URL")
 		} else {
-			slog.Warn("Failed to decode finicky protocol URL", "error", err, "url", C.GoString(url))
+			slog.Warn("Failed to decode finicky protocol URL")
 		}
 	}
 
+	trace.Mark("decode")
 	urlListener <- URLInfo{
+		Trace:            trace,
 		URL:              urlString,
 		Opener:           &opener,
 		OpenInBackground: bool(openInBackground),
@@ -306,11 +358,11 @@ func TestURL(url *C.char) {
 }
 
 func TestURLInternal(urlString string) {
-	slog.Debug("Testing URL", "url", urlString)
+	slog.Debug("Testing URL")
 
 	config, err := resolver.ResolveURL(vm, urlString, nil, false)
 	if err != nil {
-		slog.Error("Failed to evaluate URL", "error", err)
+		slog.Error("Failed to evaluate URL", "error_type", fmt.Sprintf("%T", err))
 		window.SendMessageToWebView("testUrlResult", map[string]interface{}{
 			"error": err.Error(),
 		})
@@ -339,8 +391,10 @@ func QueueWindowDisplay(openWindow int32) {
 
 //export ShowConfigWindow
 func ShowConfigWindow() {
+	diagnostics.Event("window_show_started", 0)
 	slog.Debug("Showing window")
 	window.ShowWindow()
+	diagnostics.Event("window_show_returned", 0)
 
 	// Send version information
 	currentVersion := version.GetCurrentVersion()

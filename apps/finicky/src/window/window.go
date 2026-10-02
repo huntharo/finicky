@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"finicky/assets"
 	"finicky/browser"
+	"finicky/diagnostics"
 	"finicky/rules"
 	"finicky/util"
 	"finicky/version"
@@ -32,6 +33,11 @@ var (
 	TestUrlHandler   func(string)
 	SaveRulesHandler func(rules.RulesFile)
 )
+
+//export RecordWindowLifecycle
+func RecordWindowLifecycle(event *C.char) {
+	diagnostics.Event(C.GoString(event), 0)
+}
 
 //export WindowIsReady
 func WindowIsReady() {
