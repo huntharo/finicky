@@ -9,10 +9,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"slices"
+	"strings"
 
-	"al.essio.dev/pkg/shellescape"
+	"finicky/diagnostics"
 	"finicky/util"
 )
 
@@ -41,12 +41,17 @@ type browserInfo struct {
 }
 
 func LaunchBrowser(config BrowserConfig, dryRun bool, openInBackgroundByDefault bool) error {
+	return LaunchBrowserWithTrace(config, dryRun, openInBackgroundByDefault, nil)
+}
+
+// LaunchBrowserWithTrace measures profile preparation and the open process separately.
+func LaunchBrowserWithTrace(config BrowserConfig, dryRun bool, openInBackgroundByDefault bool, trace *diagnostics.Trace) error {
 	if config.AppType == "none" {
 		slog.Info("AppType is 'none', not launching any browser")
 		return nil
 	}
 
-	slog.Info("Starting browser", "name", config.Name, "url", config.URL)
+	slog.Info("Starting browser", "name", config.Name)
 
 	var openArgs []string
 
@@ -77,7 +82,7 @@ func LaunchBrowser(config BrowserConfig, dryRun bool, openInBackgroundByDefault 
 
 	// Add --args if we have profile args or custom args
 	if ok || hasCustomArgs {
-		if ! slices.Contains(config.Args, "--args") {
+		if !slices.Contains(config.Args, "--args") {
 			openArgs = append(openArgs, "--args")
 		}
 		// Add profile arguments first if present
@@ -98,14 +103,13 @@ func LaunchBrowser(config BrowserConfig, dryRun bool, openInBackgroundByDefault 
 
 	cmd := exec.Command("open", openArgs...)
 
-	// Pretty print the command with proper escaping
-	prettyCmd := formatCommand(cmd.Path, cmd.Args)
+	trace.Mark("browser_prepare")
 
 	if dryRun {
-		slog.Debug("Would run command (dry run)", "command", prettyCmd)
+		slog.Debug("Would run open (dry run)", "background", openInBackground, "profile_requested", config.Profile != "", "custom_arg_count", len(config.Args))
 		return nil
 	} else {
-		slog.Debug("Run command", "command", prettyCmd)
+		slog.Debug("Run open", "background", openInBackground, "profile_requested", config.Profile != "", "custom_arg_count", len(config.Args))
 	}
 
 	stderr, err := cmd.StderrPipe()
@@ -121,6 +125,7 @@ func LaunchBrowser(config BrowserConfig, dryRun bool, openInBackgroundByDefault 
 		return err
 	}
 
+	trace.Mark("open_start")
 	stderrBytes, err := io.ReadAll(stderr)
 	if err != nil {
 		return fmt.Errorf("error reading stderr: %v", err)
@@ -132,12 +137,13 @@ func LaunchBrowser(config BrowserConfig, dryRun bool, openInBackgroundByDefault 
 	}
 
 	cmdErr := cmd.Wait()
+	trace.Mark("open_wait")
 
 	if len(stderrBytes) > 0 {
-		slog.Error("Command returned error", "error", string(stderrBytes))
+		slog.Error("Open returned stderr", "bytes", len(stderrBytes))
 	}
 	if len(stdoutBytes) > 0 {
-		slog.Debug("Command returned output", "output", string(stdoutBytes))
+		slog.Debug("Open returned stdout", "bytes", len(stdoutBytes))
 	}
 
 	if cmdErr != nil {
@@ -375,18 +381,4 @@ func GetProfilesForBrowser(identifier string) []string {
 	default:
 		return []string{}
 	}
-}
-
-// formatCommand returns a properly shell-escaped string representation of the command
-func formatCommand(path string, args []string) string {
-	if len(args) == 0 {
-		return shellescape.Quote(path)
-	}
-
-	quotedArgs := make([]string, len(args))
-	for i, arg := range args {
-		quotedArgs[i] = shellescape.Quote(arg)
-	}
-
-	return strings.Join(quotedArgs, " ")
 }

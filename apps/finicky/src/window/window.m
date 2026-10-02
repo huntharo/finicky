@@ -1,5 +1,7 @@
 #import "window.h"
 
+extern void RecordWindowLifecycle(char *event);
+
 static WindowController* windowController = nil;
 static NSString* htmlContent = nil;
 static NSMutableDictionary* fileContents = nil;
@@ -62,6 +64,7 @@ void SetFileContentWithLength(const char* path, const char* content, size_t leng
 }
 
 - (void)setupWindow {
+    RecordWindowLifecycle("window_setup_started");
     // Create window
     window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 860, 600)
                                        styleMask:NSWindowStyleMaskTitled |
@@ -126,16 +129,19 @@ void SetFileContentWithLength(const char* path, const char* content, size_t leng
 
     // Set webView as content view
     window.contentView = webView;
+    RecordWindowLifecycle("window_setup_finished");
 }
 
 - (void)showWindow {
     if ([NSThread isMainThread]) {
         [window makeKeyAndOrderFront:nil];
         [NSApp activateIgnoringOtherApps:true];
+        RecordWindowLifecycle("window_ordered_front");
     } else {
         dispatch_async(dispatch_get_main_queue(), ^{
             [window makeKeyAndOrderFront:nil];
             [NSApp activateIgnoringOtherApps:true];
+            RecordWindowLifecycle("window_ordered_front");
         });
     }
 }
@@ -172,7 +178,7 @@ void SetFileContentWithLength(const char* path, const char* content, size_t leng
 - (void)userContentController:(WKUserContentController *)userContentController
       didReceiveScriptMessage:(WKScriptMessage *)message {
     // Handle messages from JavaScript here
-    NSLog(@"Received message from WebView: %@", message.body);
+    // Message bodies may contain test URLs or config values; do not log them.
 
     // Convert the message body to JSON string and forward to Go
     if ([message.body isKindOfClass:[NSString class]]) {

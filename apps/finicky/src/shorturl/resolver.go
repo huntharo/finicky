@@ -39,7 +39,7 @@ func init() {
 func ResolveURL(originalURL string) (string, error) {
 	parsedURL, err := url.Parse(originalURL)
 	if err != nil {
-		return originalURL, fmt.Errorf("failed to parse URL: %v", err)
+		return originalURL, fmt.Errorf("failed to parse URL")
 	}
 
 	// Check if the domain is a known URL shortener
@@ -62,7 +62,7 @@ func ResolveURL(originalURL string) (string, error) {
 	// Helper to get the best available URL
 	getReturnUrl := func() string {
 		if lastUrl != "" && lastUrl != originalURL {
-			slog.Debug("Falling back to last known URL from redirects", "url", lastUrl)
+			slog.Debug("Falling back to last known URL from redirects", "redirect_seen", true)
 			return lastUrl
 		}
 		return originalURL
@@ -73,7 +73,7 @@ func ResolveURL(originalURL string) (string, error) {
 		Timeout: 750 * time.Millisecond,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			lastUrl = req.URL.String()
-			slog.Debug("Redirected to", "url", lastUrl)
+			slog.Debug("Redirected to", "redirect_seen", true)
 			// Allow up to 3 redirects
 			if len(via) >= 3 {
 				return fmt.Errorf("stopped after 3 redirects")
@@ -85,20 +85,20 @@ func ResolveURL(originalURL string) (string, error) {
 	// Make a HEAD request first to follow redirects without downloading content
 	req, err := http.NewRequest("HEAD", originalURL, nil)
 	if err != nil {
-		return originalURL, fmt.Errorf("failed to create request: %v", err)
+		return originalURL, fmt.Errorf("failed to create request")
 	}
 	req.Header.Set("User-Agent", "Finicky/4.0")
 
 	resp, err := client.Do(req)
 
 	if err != nil {
-		slog.Debug("Failed to make HEAD request", "url", originalURL, "error", err)
+		slog.Debug("Failed to make HEAD request", "request_failed", true)
 	}
 
 	if resp != nil {
 		// If we got a successful response, return the final URL
 		if resp.StatusCode == http.StatusOK {
-			slog.Debug("Got a successful response", "url", resp.Request.URL.String())
+			slog.Debug("Got a successful response", "status", resp.StatusCode)
 			return resp.Request.URL.String(), nil
 		}
 
@@ -110,19 +110,19 @@ func ResolveURL(originalURL string) (string, error) {
 	// If HEAD request failed, try GET as fallback
 	req, err = http.NewRequest("GET", originalURL, nil)
 	if err != nil {
-		return getReturnUrl(), fmt.Errorf("failed to create GET request: %v", err)
+		return getReturnUrl(), fmt.Errorf("failed to create GET request")
 	}
 	req.Header.Set("User-Agent", "Finicky/4.0")
 
 	resp, err = client.Do(req)
 
 	if err != nil {
-		return getReturnUrl(), fmt.Errorf("failed to make GET request: %v", err)
+		return getReturnUrl(), fmt.Errorf("failed to make GET request")
 	}
 
 	if resp != nil {
 		if resp.StatusCode == http.StatusOK {
-			slog.Debug("Got a successful response", "url", resp.Request.URL.String())
+			slog.Debug("Got a successful response", "status", resp.StatusCode)
 			return resp.Request.URL.String(), nil
 		}
 
