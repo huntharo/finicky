@@ -237,76 +237,12 @@ func (cfw *ConfigFileWatcher) StartWatching() error {
 		configPath, err := cfw.GetConfigPath(false)
 
 		if err != nil {
-			// Watch any potential config paths
-			configPaths := cfw.GetConfigPaths()
-
-			// Use a map to track unique folders
-			uniqueFolders := make(map[string]bool)
-			for _, path := range configPaths {
-				expandedPath := os.ExpandEnv(path)
-				folder := filepath.Dir(expandedPath)
-				uniqueFolders[folder] = true
+			configPath, err = cfw.waitForConfig()
+			if err != nil {
+				return err
 			}
-
-			// Convert to slice for logging
-			var watchPaths []string
-			for folder := range uniqueFolders {
-				watchPaths = append(watchPaths, folder)
-			}
-
-			slog.Debug("Watching for config files", "paths", watchPaths)
-
-			// Add each unique folder to the watcher
-			for folder := range uniqueFolders {
-				if err := cfw.watcher.Add(folder); err != nil {
-					slog.Debug("Error watching folder", "folder", folder, "error", err)
-				}
-			}
-
-			detectedCreation := false
-			for !detectedCreation {
-				select {
-				case event, ok := <-cfw.watcher.Events:
-					if !ok {
-						return fmt.Errorf("watcher closed")
-					}
-
-					if event.Has(fsnotify.Create) || event.Has(fsnotify.Write) {
-						// Check if the event path matches any of our config paths
-						eventName := event.Name
-						isConfigFile := false
-						for _, path := range configPaths {
-							expandedPath := os.ExpandEnv(path)
-							if eventName == expandedPath {
-								isConfigFile = true
-								break
-							}
-						}
-
-						if !isConfigFile {
-							break
-						}
-
-						detectedCreation = true
-
-						err := cfw.handleConfigFileEvent(event)
-						if err != nil {
-							return err
-						}
-
-						for folder := range uniqueFolders {
-							if err := cfw.watcher.Remove(folder); err != nil {
-								slog.Debug("Error removing watch on folder", "folder", folder, "error", err)
-							}
-						}
-					}
-
-				case err, ok := <-cfw.watcher.Errors:
-					if !ok {
-						return fmt.Errorf("watcher closed")
-					}
-					slog.Debug("error:", "error", err)
-				}
+			if err := cfw.handleConfigFileEvent(fsnotify.Event{Name: configPath, Op: fsnotify.Create}); err != nil {
+				return err
 			}
 
 		} else {
