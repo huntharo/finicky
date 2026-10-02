@@ -9,7 +9,11 @@
 #include <syslog.h>
 #include <stdbool.h>
 
-extern void HandleURL(char *url, char *name, char *bundleId, char *path, char *windowTitle, bool openInBackground);
+extern unsigned long long BeginURLDispatch(char *source);
+extern void MarkURLDispatch(unsigned long long id, char *stage);
+extern void SetURLDispatchValue(unsigned long long id, char *key, int value);
+extern void RecordAppLifecycle(char *event, int value);
+extern void HandleURL(char *url, char *name, char *bundleId, char *path, char *windowTitle, bool openInBackground, unsigned long long dispatchID);
 extern void QueueWindowDisplay(int launchedByUser);
 extern void ShowConfigWindow();
 extern char* GetCurrentConfigPath();
