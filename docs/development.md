@@ -63,6 +63,8 @@ Restore resets defaults and removes the successful recovery snapshot. It does no
 
 ## Verification
 
+Build once with `./scripts/build.sh --dev` before Go tests; they embed/use the generated API and UI assets. CI runs tests after its universal build for the same reason.
+
 ```sh
 ./scripts/test.sh
 (cd packages/config-api && npm test -- --run)
