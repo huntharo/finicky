@@ -93,7 +93,7 @@ Finicky has browser extensions for Chrome and Firefox. They add an "open with Fi
 
 ### Building Finicky from source
 
-See [Building Finicky from source](https://github.com/johnste/finicky/wiki/Building-Finicky-from-source)
+See [Building Finicky from source](https://github.com/johnste/finicky/wiki/Building-Finicky-from-source). For isolated worktree builds and explicit URL-handler testing, see [Developing Finicky](docs/development.md).
 
 ### Works well with
 

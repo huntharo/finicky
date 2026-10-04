@@ -78,3 +78,50 @@ bool setDefaultHandlerForURLScheme(const char* bundleId, const char* scheme) {
         return true;
     }
 }
+
+// Runtime identity plus path APIs for the explicit developer handler CLI.
+const char* currentApplicationPath(void) {
+    return strdup([[[NSBundle mainBundle] bundlePath] UTF8String]);
+}
+const char* currentBundleIdentifier(void) {
+    NSString *identifier = [[NSBundle mainBundle] bundleIdentifier];
+    return identifier ? strdup([identifier UTF8String]) : NULL;
+}
+bool isDevelopmentBundle(void) {
+    return [[[[NSBundle mainBundle] infoDictionary] objectForKey:@"FinickyDevelopment"] boolValue];
+}
+const char* defaultApplicationPath(const char* scheme) {
+    @autoreleasepool {
+        NSURL *url = [NSURL URLWithString:[NSString stringWithFormat:@"%s://", scheme]];
+        NSURL *app = [[NSWorkspace sharedWorkspace] URLForApplicationToOpenURL:url];
+        return app ? strdup([app.path UTF8String]) : NULL;
+    }
+}
+bool registerApplication(const char* path) {
+    @autoreleasepool {
+        return LSRegisterURL((__bridge CFURLRef)[NSURL fileURLWithPath:[NSString stringWithUTF8String:path]], true) == noErr;
+    }
+}
+bool setDefaultApplicationPath(const char* path, const char* scheme) {
+    @autoreleasepool {
+        NSURL *app = [NSURL fileURLWithPath:[NSString stringWithUTF8String:path]];
+        if (![[NSFileManager defaultManager] fileExistsAtPath:app.path]) return false;
+        dispatch_semaphore_t completion = dispatch_semaphore_create(0);
+        __block BOOL succeeded = NO;
+        [[NSWorkspace sharedWorkspace] setDefaultApplicationAtURL:app
+            toOpenURLsWithScheme:[NSString stringWithUTF8String:scheme]
+            completionHandler:^(NSError *error) {
+                succeeded = (error == nil);
+                dispatch_semaphore_signal(completion);
+                if (error) NSLog(@"URL handler change failed: %@", error);
+            }];
+        // CLI runs on the locked main OS thread, before NSApp.run. Pump its
+        // run loop so the asynchronous completion can be observed and verified.
+        NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:30];
+        while (dispatch_semaphore_wait(completion, DISPATCH_TIME_NOW) != 0) {
+            if ([deadline timeIntervalSinceNow] <= 0) return false;
+            [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];
+        }
+        return succeeded;
+    }
+}

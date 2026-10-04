@@ -75,7 +75,16 @@ func main() {
 	noConfigPtr := flag.Bool("no-config", false, "Skip JS configuration file entirely")
 	windowPtr := flag.Bool("window", false, "Force window to open")
 	dryRunPtr := flag.Bool("dry-run", false, "Simulate without actually opening browsers")
+	handlerAction := flag.String("url-handlers", "", "Developer URL handlers: status, switch, restore (exits without launching)")
+	handlerState := flag.String("handler-state", "", "File storing previous URL handler application paths")
 	flag.Parse()
+	if *handlerAction != "" {
+		if err := runHandlerCommand(*handlerAction, *handlerState); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 
 	// Use the parsed values
 	customConfigPath := *configPathPtr
@@ -104,16 +113,20 @@ func main() {
 	slog.Info("Starting Finicky", "version", currentVersion)
 	slog.Debug("Build info", "buildDate", buildDate, "commitHash", commitHash)
 
-	go func() {
-		is_default_browser, err := setDefaultBrowser()
-		if err != nil {
-			slog.Debug("Failed checking if we are the default browser", "error", err)
-		} else if !is_default_browser {
-			slog.Debug("Finicky is not the default browser")
-		} else {
-			slog.Debug("Finicky is the default browser")
-		}
-	}()
+	if !isDevelopmentBuild() {
+		go func() {
+			is_default_browser, err := setDefaultBrowser()
+			if err != nil {
+				slog.Debug("Failed checking if we are the default browser", "error", err)
+			} else if !is_default_browser {
+				slog.Debug("Finicky is not the default browser")
+			} else {
+				slog.Debug("Finicky is the default browser")
+			}
+		}()
+	} else {
+		slog.Info("Development bundle: leaving system URL handlers unchanged", "bundleID", currentBundleID())
+	}
 
 	namespace := "finickyConfig"
 	configChange := make(chan struct{}, 1)

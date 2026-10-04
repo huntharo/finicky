@@ -46,6 +46,12 @@ jobs:
           chmod +x scripts/build.sh
           ./scripts/build.sh
 
+      - name: Test developer workflow
+        run: |
+          ./scripts/test.sh
+          npm --prefix packages/config-api test -- --run
+          python3 scripts/test-dev-workflow.py
+
       - name: Create archive
         run: |
           cd apps/finicky/build
