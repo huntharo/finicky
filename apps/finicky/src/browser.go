@@ -8,23 +8,46 @@ package main
 import "C"
 
 import (
+	"finicky/urlhandlers"
 	"fmt"
 	"unsafe"
 )
 
-var bundleId = "se.johnste.finicky"
+func currentBundleID() string {
+	result := C.currentBundleIdentifier()
+	if result == nil {
+		return ""
+	}
+	defer C.free(unsafe.Pointer(result))
+	return C.GoString(result)
+}
+
+func isDevelopmentBuild() bool { return bool(C.isDevelopmentBundle()) }
 
 func isDefaultBrowser() (bool, error) {
-	bundleIdHTTP, _ := getDefaultHandlerForURLScheme("http")
-	bundleIdHTTPS, _ := getDefaultHandlerForURLScheme("https")
-	bundleIdFinicky, _ := getDefaultHandlerForURLScheme("finicky")
-
-	if bundleIdHTTP == bundleIdHTTPS &&
-		bundleIdHTTP == bundleId &&
-		bundleIdHTTP == bundleIdFinicky {
-		return true, nil
+	identity := currentBundleID()
+	if identity == "" {
+		return false, fmt.Errorf("application has no bundle identifier")
 	}
-	return false, nil
+	return matchesDefaultHandlers(identity, currentAppPath(), func(scheme string) (string, string, error) {
+		handlerID, err := getDefaultHandlerForURLScheme(scheme)
+		if err != nil {
+			return "", "", err
+		}
+		handlerPath, err := (nativeRegistry{}).Handler(scheme)
+		return handlerID, handlerPath, err
+	}), nil
+}
+
+func matchesDefaultHandlers(identity, app string, handler func(string) (string, string, error)) bool {
+	for _, scheme := range urlhandlers.Schemes {
+		handlerID, handlerPath, err := handler(scheme)
+		// An unregistered scheme means we are not the default yet.
+		if err != nil || handlerID != identity || handlerPath != app {
+			return false
+		}
+	}
+	return true
 }
 
 func setDefaultBrowser() (bool, error) {
@@ -36,9 +59,9 @@ func setDefaultBrowser() (bool, error) {
 		return true, nil
 	}
 
-	setDefaultHandlerForURLScheme(bundleId, "http")
-	setDefaultHandlerForURLScheme(bundleId, "https")
-	setDefaultHandlerForURLScheme(bundleId, "finicky")
+	setDefaultHandlerForURLScheme(currentBundleID(), "http")
+	setDefaultHandlerForURLScheme(currentBundleID(), "https")
+	setDefaultHandlerForURLScheme(currentBundleID(), "finicky")
 	return true, nil
 }
 
