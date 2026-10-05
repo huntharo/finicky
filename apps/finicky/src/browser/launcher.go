@@ -1,6 +1,7 @@
 package browser
 
 import (
+	"context"
 	_ "embed"
 	"encoding/json"
 	"fmt"
@@ -9,8 +10,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
+	"time"
 
 	"finicky/diagnostics"
 	"finicky/util"
@@ -52,6 +55,10 @@ func LaunchBrowserWithTrace(config BrowserConfig, dryRun bool, openInBackgroundB
 	}
 
 	slog.Info("Starting browser", "name", config.Name)
+
+	if runtime.GOOS != "darwin" {
+		return launchPortable(config, dryRun, trace)
+	}
 
 	var openArgs []string
 
@@ -101,7 +108,9 @@ func LaunchBrowserWithTrace(config BrowserConfig, dryRun bool, openInBackgroundB
 		openArgs = append(openArgs, config.URL)
 	}
 
-	cmd := exec.Command("open", openArgs...)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "open", openArgs...)
 
 	trace.Mark("browser_prepare")
 
@@ -184,7 +193,7 @@ func resolveBrowserProfileArgs(identifier string, profile string) ([]string, boo
 				return nil, false
 			}
 
-			localStatePath := filepath.Join(homeDir, "Library/Application Support", matchedBrowser.ConfigDirRelative, "Local State")
+			localStatePath := filepath.Join(profileDirectory(homeDir, *matchedBrowser), "Local State")
 			profilePath, ok := parseProfiles(localStatePath, profile)
 			if ok {
 				return []string{"--profile-directory=" + profilePath}, true
@@ -196,7 +205,7 @@ func resolveBrowserProfileArgs(identifier string, profile string) ([]string, boo
 				return nil, false
 			}
 
-			profilesIniPath := filepath.Join(homeDir, "Library/Application Support", matchedBrowser.ConfigDirRelative, "profiles.ini")
+			profilesIniPath := filepath.Join(profileDirectory(homeDir, *matchedBrowser), "profiles.ini")
 			profileName, ok := parseFirefoxProfiles(profilesIniPath, profile)
 			if ok {
 				return []string{"-P", profileName}, true
@@ -373,10 +382,10 @@ func GetProfilesForBrowser(identifier string) []string {
 
 	switch matchedBrowser.Type {
 	case "Chromium":
-		localStatePath := filepath.Join(homeDir, "Library/Application Support", matchedBrowser.ConfigDirRelative, "Local State")
+		localStatePath := filepath.Join(profileDirectory(homeDir, *matchedBrowser), "Local State")
 		return getAllChromiumProfiles(localStatePath)
 	case "Firefox":
-		profilesIniPath := filepath.Join(homeDir, "Library/Application Support", matchedBrowser.ConfigDirRelative, "profiles.ini")
+		profilesIniPath := filepath.Join(profileDirectory(homeDir, *matchedBrowser), "profiles.ini")
 		return readFirefoxProfileNames(profilesIniPath)
 	default:
 		return []string{}

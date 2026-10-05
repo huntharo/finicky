@@ -1,3 +1,5 @@
+//go:build darwin
+
 #import "info.h"
 #import <Cocoa/Cocoa.h>
 #import <IOKit/ps/IOPSKeys.h>

@@ -32,6 +32,11 @@ type Trace struct {
 }
 
 func Begin(source string) *Trace {
+	return BeginAt(source, time.Now())
+}
+
+// BeginAt includes native receipt and scheduling time before Go starts routing.
+func BeginAt(source string, received time.Time) *Trace {
 	now := time.Now()
 	state.Lock()
 	defer state.Unlock()
@@ -47,7 +52,7 @@ func Begin(source string) *Trace {
 	}
 	state.id++
 	state.last = now
-	return &Trace{ID: state.id, Source: source, Path: path, Idle: idle, started: now, last: now, stages: make(map[string]float64, 16), values: make(map[string]int)}
+	return &Trace{ID: state.id, Source: source, Path: path, Idle: idle, started: received, last: received, stages: make(map[string]float64, 16), values: make(map[string]int)}
 }
 
 func milliseconds(d time.Duration) float64 { return float64(d.Microseconds()) / 1000 }

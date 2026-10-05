@@ -4,3 +4,5 @@ build
 .env
 dist
 example-config
+# Generated config API for the PwrFinicky router
+/apps/finicky/src/router/config-api.js

@@ -1,3 +1,43 @@
+# PwrFinicky
+
+An independently maintained fork of [Finicky](https://github.com/johnste/finicky), originally created by John Sterling and contributors. PwrFinicky keeps Finicky's JavaScript/TypeScript routing engine and adds an Electron 44 settings application around a resident Go URL handler. The original MIT license and attribution are retained.
+
+**This branch is an early development build.** The Go router builds for macOS, Windows, and Linux. macOS is the first locally exercised desktop target; Windows and Linux have separate browser/registration adapters and CI builds, with runtime validation still in progress.
+
+## Build and run PwrFinicky
+
+See [build and packaging instructions](docs/pwrfinicky-build.md). The PwrFinicky build writes under `apps/pwrfinicky/build`; it does not install over Finicky or change the default browser at startup.
+
+```sh
+npm ci --prefix apps/pwrfinicky
+npm run build --prefix apps/pwrfinicky
+npm start --prefix apps/pwrfinicky
+```
+
+Open the **PF** menu-bar item to return to settings on macOS. Closing the Electron settings window leaves the Go router running. Use **Quit PwrFinicky** in the tray or settings to stop the router. The settings application starts only when explicitly requested; URL dispatch works while Electron is closed.
+
+- **Routing:** choose a browser/profile and maintain ordered wildcard rules.
+- **Test a link:** preview the actual Go engine's result; use Open to dispatch explicitly.
+- **Activity:** inspect recent dispatches, selected browsers, and timings. Full URL history is kept in memory; routine disk timing logs omit URL contents.
+- **Settings:** select an existing Finicky JS/TS config, return to visual rules, reload, and explicitly request default-browser registration.
+
+JSON rules live in the platform's user configuration directory under `PwrFinicky/rules.json`. Existing Finicky configs are used only when explicitly selected. JavaScript handlers run before visual rules, and the JavaScript config owns the default browser. Configuration changes are validated before publication; invalid edits preserve the working snapshot and show an error. External edits and atomic replacements are detected by polling only the selected config and its explicit imports.
+
+For a separate test instance on macOS:
+
+```sh
+apps/pwrfinicky/build/PwrFinicky.app/Contents/MacOS/PwrFinicky \
+  --data-dir "$PWD/apps/pwrfinicky/build/test-data" --headless --dry-run
+```
+
+Add `--config /absolute/path/to/finicky.ts` to test an existing configuration. `--test https://example.com` resolves a URL and prints JSON without launching a browser. `--url https://example.com` dispatches through an existing instance with the same data directory. `--rpc state`, `--rpc reload`, and `--rpc quit` inspect/control that instance. `--dry-run` is fixed at router startup.
+
+Sender application identity is available on macOS. Sender window titles are deliberately unavailable in this first PwrFinicky host, so rules requiring `opener.windowTitle` need adjustment. Windows/Linux system-context helpers also have reduced capabilities. Default-browser registration is an explicit action; Windows opens the system chooser after registering the app. App signing/notarization for public releases requires the fork maintainer's own credentials.
+
+## Original Finicky documentation
+
+The documentation below describes the upstream application and its native build. For this branch's application, use the PwrFinicky commands above.
+
 <div align="center"><picture>
   <source media="(prefers-color-scheme: dark)" srcset="https://github.com/user-attachments/assets/ab66e6cc-25d1-4f5f-9c98-c742ecb2261f">
   <img alt="Finicky Logo" height="110" src="https://github.com/user-attachments/assets/067d7619-a2be-49dd-8a4f-5e9a46fa632a">

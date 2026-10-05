@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"time"
 
 	"github.com/dop251/goja"
 )
@@ -181,4 +182,21 @@ func (vm *VM) GetAllConfigOptions() ConfigOptions {
 // Runtime returns the underlying goja.Runtime
 func (vm *VM) Runtime() *goja.Runtime {
 	return vm.runtime
+}
+
+// NewFromScriptWithTimeout bounds user config initialization. The runtime stays
+// private until validation has succeeded. Callers must serialize later access.
+func NewFromScriptWithTimeout(apiContent []byte, namespace, script string, timeout time.Duration) (*VM, error) {
+	vm := &VM{runtime: goja.New(), namespace: namespace}
+	done := make(chan struct{})
+	timer := time.AfterFunc(timeout, func() { vm.runtime.Interrupt("configuration evaluation timed out"); close(done) })
+	err := vm.setup(apiContent, []byte(script))
+	if !timer.Stop() {
+		<-done
+	}
+	vm.runtime.ClearInterrupt()
+	if err != nil {
+		return nil, err
+	}
+	return vm, nil
 }
