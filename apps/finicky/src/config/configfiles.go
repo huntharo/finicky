@@ -33,6 +33,9 @@ type ConfigFileWatcher struct {
 	initialInfo os.FileInfo
 	closed      bool
 	closeOnce   sync.Once
+	eventWake   chan struct{}
+	eventsDone  chan struct{}
+	rearm       atomic.Bool
 
 	// Debounce rapid file-change events (e.g. editors that write twice)
 	debounceMu       sync.Mutex
@@ -295,12 +298,25 @@ func (cfw *ConfigFileWatcher) watchConfigFile(path string) error {
 }
 
 func (cfw *ConfigFileWatcher) StartWatching() error {
+	// Windows delivers events and executes Add/Remove on the same backend
+	// thread. Always drain its channels independently: calling Remove from
+	// the sole event consumer can deadlock behind a pending unbuffered event.
+	cfw.eventWake = make(chan struct{}, 1)
+	cfw.eventsDone = make(chan struct{})
+	go cfw.consumeEvents()
+	defer func() { cfw.watcher.Close(); <-cfw.eventsDone }()
 	poll := time.NewTicker(500 * time.Millisecond)
 	defer poll.Stop()
 	previousPath, previousInfo := cfw.initialPath, cfw.initialInfo
 	// Preserve the constructor's missing state. Re-snapshotting here would
 	// swallow a creation between construction and this goroutine starting.
 	for {
+		cfw.debounceMu.Lock()
+		closed := cfw.closed
+		cfw.debounceMu.Unlock()
+		if closed {
+			return nil
+		}
 		configPath, err := cfw.GetConfigPath(false)
 
 		// Drop stale inode watches before switching discovery paths or polling.
@@ -331,7 +347,7 @@ func (cfw *ConfigFileWatcher) StartWatching() error {
 			}
 			// The inode changes during atomic saves; timestamps/size cover ordinary
 			// writes if the platform fails to deliver a write event.
-			if previousInfo == nil || previousPath != configPath || !os.SameFile(previousInfo, info) ||
+			if cfw.rearm.Swap(false) || previousInfo == nil || previousPath != configPath || !os.SameFile(previousInfo, info) ||
 				!previousInfo.ModTime().Equal(info.ModTime()) || previousInfo.Size() != info.Size() {
 				cfw.watcher.Remove(configPath)
 				cfw.handleConfigFileEvent(fsnotify.Event{Name: configPath, Op: fsnotify.Write})
@@ -341,19 +357,9 @@ func (cfw *ConfigFileWatcher) StartWatching() error {
 				slog.Warn("Failed to watch config file; using polling", "path", configPath, "error", err)
 			}
 			select {
-			case event, ok := <-cfw.watcher.Events:
-				if !ok {
-					return nil
-				}
-				cfw.handleConfigFileEvent(event)
-				if event.Has(fsnotify.Remove) || event.Has(fsnotify.Rename) {
-					cfw.watcher.Remove(configPath)
-				}
-			case err, ok := <-cfw.watcher.Errors:
-				if !ok {
-					return nil
-				}
-				slog.Error("Configuration watcher error", "error", err)
+			case <-cfw.eventWake:
+			case <-cfw.eventsDone:
+				return nil
 			case <-poll.C:
 			}
 
@@ -361,6 +367,31 @@ func (cfw *ConfigFileWatcher) StartWatching() error {
 	}
 	// Unreachable - infinite loop above. Added for completeness only.
 	// return nil
+}
+
+func (cfw *ConfigFileWatcher) consumeEvents() {
+	defer close(cfw.eventsDone)
+	for {
+		select {
+		case event, ok := <-cfw.watcher.Events:
+			if !ok {
+				return
+			}
+			if event.Has(fsnotify.Remove) || event.Has(fsnotify.Rename) {
+				cfw.rearm.Store(true)
+			}
+			cfw.handleConfigFileEvent(event)
+		case err, ok := <-cfw.watcher.Errors:
+			if !ok {
+				return
+			}
+			slog.Error("Configuration watcher error", "error", err)
+		}
+		select {
+		case cfw.eventWake <- struct{}{}:
+		default:
+		}
+	}
 }
 
 // handleConfigFileEvent invalidates bundles for every content/identity change.

@@ -23,15 +23,9 @@ func (cfw *ConfigFileWatcher) waitForConfig() (string, error) {
 		}
 		select {
 		case <-ticker.C:
-		case _, ok := <-cfw.watcher.Events:
-			if !ok {
-				return "", fmt.Errorf("watcher closed")
-			}
-		case err, ok := <-cfw.watcher.Errors:
-			if !ok {
-				return "", fmt.Errorf("watcher closed")
-			}
-			slog.Debug("error:", "error", err)
+		case <-cfw.eventWake:
+		case <-cfw.eventsDone:
+			return "", fmt.Errorf("watcher closed")
 		}
 	}
 }
