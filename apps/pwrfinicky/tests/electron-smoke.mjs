@@ -31,7 +31,7 @@ native.stderr.on('data', chunk => { nativeLog += chunk; });
 native.on('error', error => { nativeError = error; });
 let app;
 let endpoint;
-const evidence = { platform, arch, launchBrowser, dataDir, rendererErrors: [] };
+const evidence = { platform, arch, launchBrowser, dataDir, settingsPids: [], rendererErrors: [] };
 
 async function until(check, label, timeout = 15000) {
   const end = Date.now() + timeout;
@@ -51,8 +51,15 @@ async function rpc(method, params = {}) {
   if (!response.ok) throw new Error(body.error);
   return body;
 }
+async function settingsProcessCount() {
+  const { stdout } = await execute('/bin/ps', ['-axo', 'pid=,comm='], { maxBuffer: 16 << 20 });
+  return stdout.split('\n').filter(line => line.trimEnd().endsWith(settings)).length;
+}
 async function openSettings() {
   app = await electron.launch({ executablePath: settings, args: ['--endpoint', endpointPath], env, timeout: 30000 });
+  // Cleanup uses this Playwright-owned process/connection, never a name-based
+  // signal to Electron. Other development apps may be running on the machine.
+  evidence.settingsPids.push(app.process().pid);
   evidence.electron = await app.evaluate(() => process.versions.electron);
   assert.match(evidence.electron, /^44\./);
   const page = await app.firstWindow();
@@ -71,6 +78,7 @@ try {
   await until(async () => {
     try { endpoint = JSON.parse(await readFile(endpointPath, 'utf8')); return true; } catch { return false; }
   }, 'native endpoint');
+  assert.equal(endpoint.pid, native.pid, 'Endpoint must belong to the native process this test started');
   const before = await rpc('state');
   evidence.backendPid = before.backendPid;
   evidence.defaultHandlersBefore = await rpc('getDefaultStatus');
@@ -121,9 +129,7 @@ try {
   // Allow any erroneous native reopen/UI launch time to become observable.
   await new Promise(resolve => setTimeout(resolve, 1200));
   if (platform === 'darwin') {
-    const { stdout } = await execute('/bin/ps', ['-axo', 'pid=,comm='], { maxBuffer: 16 << 20 });
-    const settingsProcesses = stdout.split('\n').filter(line => line.trimEnd().endsWith(settings));
-    assert.equal(settingsProcesses.length, 0, 'A URL must not reopen Settings');
+    assert.equal(await settingsProcessCount(), 0, 'A URL must not reopen Settings');
     evidence.urlDidNotOpenSettings = true;
   }
   evidence.nativeDispatch = (await rpc('state')).history.find(item => item.url === nativeURL);
@@ -138,6 +144,28 @@ try {
     await page.locator('.history-entry').waitFor();
     await page.locator('.history-entry summary').click();
     await page.screenshot({ path: path.join(dataDir, 'activity.png') });
+  }
+  if (platform === 'darwin') {
+    await app?.close();
+    app = undefined;
+    await rpc('quit');
+    await until(async () => native.exitCode !== null || native.signalCode !== null, 'warm router shutdown');
+    const coldDir = path.join(dataDir, 'cold-start');
+    await mkdir(coldDir);
+    const coldURL = 'https://example.com/?pwrfinicky=cold-launch';
+    // No --headless: the URL event itself must suppress the normal launch UI.
+    await execute('/usr/bin/open', ['-a', product, coldURL, '--args', '--data-dir', coldDir, '--dry-run']);
+    await until(async () => {
+      try { endpoint = JSON.parse(await readFile(path.join(coldDir, 'endpoint.json'), 'utf8')); return true; } catch { return false; }
+    }, 'cold-launch endpoint');
+    evidence.coldBackendPid = endpoint.pid;
+    await until(async () => (await rpc('state')).history.some(item => item.url === coldURL), 'cold URL event');
+    await new Promise(resolve => setTimeout(resolve, 1200));
+    assert.equal(await settingsProcessCount(), 0, 'A cold URL launch must not open Settings');
+    evidence.coldURLDidNotOpenSettings = true;
+    evidence.coldDispatch = (await rpc('state')).history.find(item => item.url === coldURL);
+    assert.equal(evidence.coldDispatch.success, true);
+    assert.deepEqual(await rpc('getDefaultStatus'), evidence.defaultHandlersBefore);
   }
   assert.deepEqual(evidence.rendererErrors, []);
   evidence.passed = true;

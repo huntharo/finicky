@@ -68,7 +68,7 @@ jobs:
         run: npm run build:api
       - name: Test portable Go packages
         working-directory: apps/finicky/src
-        run: go test ./router ./config ./resolver ./rules ./browser ./diagnostics
+        run: go test -timeout 3m ./router ./config ./resolver ./rules ./browser ./diagnostics
       - name: Test build and packaging scripts
         run: npm run test:build
       - name: Test Settings
