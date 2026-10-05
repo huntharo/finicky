@@ -54,6 +54,12 @@ func portableExecutable(name string) (string, error) {
 }
 
 func launchPortable(config BrowserConfig, dryRun bool, trace *diagnostics.Trace) error {
+	// Like the macOS launcher, a dry run resolves without requiring an
+	// installed destination. Only a real handoff needs an executable/profile.
+	if dryRun {
+		trace.Mark("browser_prepare")
+		return nil
+	}
 	path, err := portableExecutable(config.Name)
 	if err != nil {
 		return err
@@ -68,9 +74,6 @@ func launchPortable(config BrowserConfig, dryRun bool, trace *diagnostics.Trace)
 	}
 	args = append(args, config.URL)
 	trace.Mark("browser_prepare")
-	if dryRun {
-		return nil
-	}
 	cmd := exec.Command(path, args...)
 	if err := cmd.Start(); err != nil {
 		return err

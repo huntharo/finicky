@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -97,6 +98,9 @@ func setLastUpdateCheck(info UpdateCheckInfo) {
 }
 
 func GetCurrentVersion() string {
+	if runtime.GOOS != "darwin" {
+		return "dev"
+	}
 	// Get the bundle path
 	bundlePath := os.Getenv("BUNDLE_PATH")
 	if bundlePath == "" {

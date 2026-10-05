@@ -163,3 +163,32 @@ func TestGetConfigPathCustom(t *testing.T) {
 		t.Fatalf("custom config = %q, %v; want %q", got, err, path)
 	}
 }
+
+func TestConfigPathPreservesEmbeddedTilde(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "RUNNER~1", "config~backup.ts")
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		t.Fatal(err)
+	}
+	writeTestConfig(t, path)
+	cfw := &ConfigFileWatcher{customConfigPath: path}
+	if got, err := cfw.GetConfigPath(false); err != nil || got != path {
+		t.Fatalf("embedded tilde changed: %q, %v; want %q", got, err, path)
+	}
+}
+
+func TestConfigCreatedBeforeWatcherLoopStarts(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.ts")
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfw := &ConfigFileWatcher{watcher: watcher, customConfigPath: path,
+		configChangeNotify: make(chan struct{}, 1), done: make(chan struct{}),
+	}
+	// Model a constructor that found no config, followed by creation before
+	// its newly scheduled watcher goroutine gets CPU time.
+	writeTestConfig(t, path)
+	go func() { defer close(cfw.done); _ = cfw.StartWatching() }()
+	defer cfw.TearDown()
+	awaitConfigDiscovery(t, cfw, path)
+}

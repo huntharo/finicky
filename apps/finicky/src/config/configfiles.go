@@ -119,9 +119,15 @@ func (cfw *ConfigFileWatcher) GetConfigPaths() []string {
 	}
 
 	for i, path := range configPaths {
-		configPaths[i] = os.ExpandEnv(path)
-		configPaths[i] = strings.ReplaceAll(configPaths[i], "~", homeDir)
-		configPaths[i] = filepath.Clean(configPaths[i])
+		path = os.ExpandEnv(path)
+		// Expand only the home prefix. A tilde inside a filename (including
+		// Windows short paths such as RUNNER~1) is part of the actual path.
+		if path == "~" {
+			path = homeDir
+		} else if strings.HasPrefix(path, "~/") || strings.HasPrefix(path, `~\`) {
+			path = filepath.Join(homeDir, path[2:])
+		}
+		configPaths[i] = filepath.Clean(path)
 	}
 
 	return configPaths
@@ -292,12 +298,8 @@ func (cfw *ConfigFileWatcher) StartWatching() error {
 	poll := time.NewTicker(500 * time.Millisecond)
 	defer poll.Stop()
 	previousPath, previousInfo := cfw.initialPath, cfw.initialInfo
-	if previousInfo == nil {
-		if path, err := cfw.GetConfigPath(false); err == nil {
-			previousPath = path
-			previousInfo, _ = os.Stat(path)
-		}
-	}
+	// Preserve the constructor's missing state. Re-snapshotting here would
+	// swallow a creation between construction and this goroutine starting.
 	for {
 		configPath, err := cfw.GetConfigPath(false)
 
