@@ -1,0 +1,27 @@
+{
+  "name": "pwrfinicky",
+  "productName": "PwrFinicky Settings",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Settings helper for the PwrFinicky native URL router",
+  "author": "PwrDrvr",
+  "main": "main.cjs",
+  "engines": {
+    "node": "^22.22.2 || ^24.15.0 || >=26.0.0"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "build:api": "node scripts/build-api.mjs",
+    "test": "node --test tests/*.test.mjs",
+    "test:build": "node --test scripts/*.test.mjs",
+    "test:package": "node scripts/smoke-package.mjs",
+    "start": "node scripts/start.mjs",
+    "package": "node scripts/package.mjs"
+  },
+  "devDependencies": {
+    "@electron/packager": "20.3.0",
+    "electron": "44.5.1",
+    "jsdom": "30.1.1",
+    "playwright": "1.63.0"
+  }
+}

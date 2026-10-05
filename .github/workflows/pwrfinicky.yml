@@ -1,0 +1,111 @@
+name: PwrFinicky
+
+on:
+  push:
+    branches: [pwrfinicky]
+    tags: ['pwrfinicky-v*']
+  pull_request:
+    branches: [pwrfinicky]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pwrfinicky-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: ${{ matrix.platform }}-${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            platform: darwin
+            arch: arm64
+            cgo: '1'
+          - runner: windows-2025
+            platform: win32
+            arch: x64
+            cgo: '0'
+          - runner: ubuntu-24.04
+            platform: linux
+            arch: x64
+            cgo: '0'
+    defaults:
+      run:
+        shell: bash
+        working-directory: apps/pwrfinicky
+    env:
+      CGO_ENABLED: ${{ matrix.cgo }}
+      TARGET_ARCH: ${{ matrix.arch }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: |
+            apps/pwrfinicky/package-lock.json
+            packages/config-api/package-lock.json
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24.x'
+          cache-dependency-path: apps/finicky/src/go.sum
+      - name: Check native runner and tag version
+        run: |
+          node -e 'if (process.arch !== process.env.TARGET_ARCH) throw new Error("Unexpected runner architecture: " + process.arch)'
+          if [[ "$GITHUB_REF" == refs/tags/pwrfinicky-v* ]]; then
+            echo "PWRFINICKY_VERSION=${GITHUB_REF_NAME#pwrfinicky-v}" >> "$GITHUB_ENV"
+          fi
+      - name: Install Settings dependencies
+        run: npm ci
+      - name: Generate embedded config API and legacy test fixture
+        run: npm run build:api
+      - name: Test portable Go packages
+        working-directory: apps/finicky/src
+        run: go test ./router ./config ./resolver ./rules ./browser ./diagnostics
+      - name: Test build and packaging scripts
+        run: npm run test:build
+      - name: Install test browser
+        run: npx playwright install --with-deps chromium
+      - name: Test Settings
+        run: |
+          if [[ "$RUNNER_OS" == Linux ]]; then
+            xvfb-run --auto-servernum npm test
+          else
+            npm test
+          fi
+      - name: Build native router and Settings helper
+        run: npm run build -- --platform ${{ matrix.platform }} --arch ${{ matrix.arch }} --skip-api
+      - name: Archive product (preserves bundle symlinks and executable permissions)
+        run: npm run package -- --platform ${{ matrix.platform }} --arch ${{ matrix.arch }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PwrFinicky-${{ matrix.platform }}-${{ matrix.arch }}
+          path: apps/pwrfinicky/build/artifacts/*
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    name: Optional draft release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/pwrfinicky-v') && vars.PWRFINICKY_ENABLE_RELEASES == 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: PwrFinicky-*
+          merge-multiple: true
+          path: artifacts
+      - name: Create draft release with build artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: gh release create "$GITHUB_REF_NAME" artifacts/* --verify-tag --draft --title "PwrFinicky ${GITHUB_REF_NAME#pwrfinicky-v}" --generate-notes
