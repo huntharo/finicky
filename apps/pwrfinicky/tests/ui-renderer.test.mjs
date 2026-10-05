@@ -20,9 +20,11 @@ async function fixture(t, { state = initialState(), handlers = {}, start = true 
   const dom = new JSDOM('<!doctype html><html><body><div id="app"></div></body></html>', { url: 'https://local.invalid/' });
   const calls = [];
   let callback;
+  let connectionCallback;
   let unsubscribed = false;
   let current = clone(state);
   const bridge = {
+    onConnectionError(listener) { connectionCallback = listener; return () => { connectionCallback = undefined; }; },
     onState(listener) { callback = listener; return () => { callback = undefined; unsubscribed = true; }; },
     async request(method, params) {
       calls.push({ method, params: clone(params) });
@@ -65,6 +67,7 @@ async function fixture(t, { state = initialState(), handlers = {}, start = true 
     },
     async navigate(view) { root.querySelector(`[data-view="${view}"]`).click(); await flush(); },
     emit(next) { current = clone(next); callback?.(clone(next)); },
+    disconnect(message) { connectionCallback?.(message); },
     getState: () => clone(current),
     count: (method) => calls.filter((call) => call.method === method).length,
     unsubscribed: () => unsubscribed,
@@ -79,6 +82,30 @@ test('entry uses local modules, a restrictive CSP, and no remote content', async
   assert.match(html, /connect-src 'none'/);
   assert.match(html, /script-src 'self'/);
   assert.doesNotMatch(html, /(?:src|href)="https?:/);
+});
+
+test('router disconnect stays visible until a state update recovers without losing draft edits', async (t) => {
+  const ui = await fixture(t);
+  ui.input('.patterns-input', 'unsaved.example/*');
+  ui.disconnect('Connection refused');
+  assert.equal(ui.query('.connection').getAttribute('data-status'), 'error');
+  assert.equal(ui.query('.config-alert').hidden, false);
+  assert.match(ui.query('.config-alert').textContent, /router is not responding/);
+  await ui.navigate('activity');
+  assert.equal(ui.query('.config-alert').hidden, false);
+  ui.emit(ui.getState());
+  assert.equal(ui.query('.connection').getAttribute('data-status'), 'ready');
+  assert.equal(ui.query('.config-alert').hidden, true);
+  await ui.navigate('routing');
+  assert.equal(ui.query('.patterns-input').value, 'unsaved.example/*');
+});
+
+test('Quit PwrFinicky is an explicit Settings action', async (t) => {
+  const ui = await fixture(t);
+  await ui.navigate('settings');
+  assert.equal(ui.count('quit'), 0);
+  await ui.click('Quit PwrFinicky');
+  assert.equal(ui.count('quit'), 1);
 });
 
 test('initial load selects Routing and loads browser profiles without any writes', async (t) => {
@@ -379,7 +406,7 @@ test('configuration chooser, file actions, reload, and upstream links use only t
   assert.deepEqual(ui.calls.filter((call) => call.method === 'openExternal').map((call) => call.params.url), ['https://github.com/johnste/finicky', 'https://github.com/johnste/finicky/blob/main/LICENSE']);
 });
 
-test('JS config saves explicitly say visual rules are still inactive', async (t) => {
+test('JS config saves explain that visual rules run after JS handlers', async (t) => {
   const ui = await fixture(t, { state: initialState({ isJSConfig: true }) });
   ui.input('.patterns-input', 'saved.example/*');
   await ui.click('Save rules');

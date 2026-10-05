@@ -6,7 +6,7 @@ PwrFinicky uses a native Go URL router and an Electron Settings helper. The rout
 
 - Node.js 24.15 or newer in the Node 24 line (or another version accepted by `apps/pwrfinicky/package.json`), npm, and Go 1.24 or newer.
 - macOS builds require Xcode Command Line Tools. Build on macOS for CGO and code signing.
-- Electron is pinned to **44.5.1**, Electron Packager to **20.3.0**, Playwright to **1.63.0**, and jsdom to **30.1.1**. The lockfile pins their transitive dependencies. jsdom 30.1.1 is compatible with the Node range above and predates the local dependency release-age window.
+- Electron is pinned to **44.5.1**, Electron Packager to **20.3.0**, Playwright to **1.63.0**, and jsdom to **30.1.1**. The lockfile pins their transitive dependencies.
 - Electron 44 supports macOS **13 Ventura and newer**, Windows 10 and newer, and supported Linux distributions. See the [Electron 44.5.1 platform support documentation](https://github.com/electron/electron/blob/v44.5.1/README.md#platform-support). The build reads the actual Settings bundle's minimum macOS version and uses the greater of that value and 13.0 for the outer app and Go deployment target.
 
 No renderer bundler is used: `main.cjs`, `preload.cjs`, and the complete `renderer/` directory are copied into an ASAR archive. Runtime files must be self-contained; all current npm dependencies are development tools.
@@ -77,7 +77,7 @@ PwrFinicky-linux-x64/
 
 The Linux desktop file uses `Exec=pwrfinicky %u` and declares MIME handlers for all three schemes. For a manual installation, keep `settings/` adjacent to the native executable and make `pwrfinicky` available on PATH, or edit the desktop file's `Exec` and `TryExec` to the installed native executable's absolute path. The build does not install that file or select MIME handlers. Default-handler integration still needs validation on the target desktop environment.
 
-Windows output is a portable build directory, not an installer. Installer registration, default-browser selection, protocol activation, and user-choice behavior still need implementation/verification on Windows. A successful build does not establish tested default-handler behavior.
+Windows output is a portable build directory. The explicit Settings action registers the current executable in the user's registry and opens Windows Default Apps for user selection. Protocol activation and user-choice behavior still need manual validation on Windows. A successful build does not establish tested default-handler behavior.
 
 ## Signing and archives
 
@@ -105,14 +105,19 @@ Archives go to `build/artifacts/PwrFinicky-<platform>-<arch>-<version>.zip` on m
 ```sh
 npm run test:build
 npm test
+npm run test:electron
 ```
 
 The build-script tests use isolated fixtures under the ignored `build/` directory. They validate layouts, generated API copies, native launch paths, argument preservation, Go target mapping, helper associations, signing order, and failure behavior. They do not substitute for launching the integrated native host and Settings UI. `npm test` runs the application tests supplied with the Settings implementation.
 
+`test:electron` requires a complete build. It launches the packaged Settings helper and real Go router with a disposable data directory, saves visual rules, previews routing, verifies invalid JS/TS edits retain the last working config, recovers from an atomic replacement, closes Settings, and dispatches a URL with Settings closed. It uses dry-run mode and never changes default handlers. On macOS it sends a real URL AppleEvent; Windows/Linux exercise the second-process URL forwarding entrypoint. Screenshots, timing evidence, and logs remain under `build/electron-smoke-*`. Run under `xvfb-run --auto-servernum` on a headless Linux desktop.
+
+For a deliberate browser handoff, `npm run test:electron -- --launch-browser` opens one example.com link in the selected browser. The locally verified macOS run used Electron 44.5.1, resolved in 2.4 ms, and completed the Safari handoff in 69 ms with Settings closed; this is one smoke-test measurement, not a latency guarantee. HTTP/HTTPS associations were identical before and after.
+
+Settings has no cookies or authentication storage. The packaged Electron cookie-encryption fuse is disabled before signing to avoid unnecessary Keychain prompts. This does not disable the renderer sandbox or context isolation.
+
 For an optional real-toolchain check, run `npm run test:package` (or pass `-- --platform win32 --arch x64`, for example). It compiles and packages a disposable fixture using the real npm, Go, Electron Packager, signing, and archiving tools. It downloads Electron if needed, never launches the fixture, and removes its temporary product afterward. Production application sources are not required for this check.
 
-`.github/workflows/pwrfinicky.yml` runs on pushes to `pwrfinicky`, PRs targeting `pwrfinicky`, manual dispatch, and `pwrfinicky-v*` tags. Native macOS ARM64, Windows x64, and Linux x64 jobs generate the API, run the selected Go packages, run build-script and application tests, build, and upload archives. Linux Settings tests run under Xvfb; Playwright Chromium is installed for tests. Runner architecture is asserted before building.
+`.github/workflows/pwrfinicky.yml` runs on pushes to `pwrfinicky`, PRs targeting `pwrfinicky`, manual dispatch, and `pwrfinicky-v*` tags. Native macOS ARM64, Windows x64, and Linux x64 jobs generate the API, run the selected Go packages, run build-script and application tests, build, exercise the packaged Electron/Go integration, and upload archives and test evidence. Linux integration tests run under Xvfb. Runner architecture is asserted before building.
 
 Tags supply the version after `pwrfinicky-v`. If repository variable `PWRFINICKY_ENABLE_RELEASES` is exactly `true`, a successful tag build also creates a **draft** GitHub release containing those archives. It does not publish the draft or imply that Windows/Linux default-handler behavior or credentialed macOS signing has been verified.
-
-The independent packaging foundation can be checked with fixtures before the parent backend and Settings changes arrive. Full application tests, the production Go binary, endpoint handoff, and end-to-end URL routing require those integrated sources.

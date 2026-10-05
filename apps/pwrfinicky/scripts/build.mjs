@@ -5,6 +5,7 @@ import {
   repoRoot, requireFile, run, settingsName,
 } from './common.mjs';
 import { buildAPI } from './build-api.mjs';
+import { flipFuses, FuseVersion, FuseV1Options } from '@electron/fuses';
 
 function xml(value) {
   return String(value).replace(/[<>&"']/g, char => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&apos;' })[char]);
@@ -62,6 +63,12 @@ export function packagerOptions({ source, output, platform, arch, version, elect
     platform, arch, electronVersion, appVersion: version, buildVersion: version.split(/[+-]/)[0],
     appBundleId: 'com.pwrdrvr.pwrfinicky.settings',
     asar: true, overwrite: true, prune: true, tmpdir: false,
+    // This local settings UI has no cookies. Disable cookie encryption before
+    // signing so opening settings never requests a macOS Keychain password.
+    afterExtract: [async ({ buildPath }) => {
+      const binary = path.join(buildPath, platform === 'darwin' ? 'Electron.app' : platform === 'win32' ? 'electron.exe' : 'electron');
+      await flipFuses(binary, { version: FuseVersion.V1, [FuseV1Options.EnableCookieEncryption]: false });
+    }],
     // Only the native outer app advertises URL handling. Explicit empty arrays
     // also remove any associations inherited from Electron's template plist.
     ...(platform === 'darwin' ? {
@@ -156,7 +163,7 @@ export async function build(options, {
       }
     }
     await execute('go', [
-      'build', '-trimpath', '-ldflags', `-s -w -X main.buildVersion=${version}`,
+      'build', '-trimpath', '-ldflags', `-s -w -X main.buildVersion=${version}${options.platform === 'win32' ? ' -H=windowsgui' : ''}`,
       '-o', executable, './cmd/pwrfinicky',
     ], { cwd: goRoot, env: goEnvironment(options, minimum) });
     await requireFile(executable, 'Go did not produce the native router');

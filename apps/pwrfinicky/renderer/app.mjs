@@ -44,6 +44,7 @@ export function createRenderer(root, bridge) {
   let destroyed = false;
   let started = false;
   let unsubscribe = () => {};
+  let unsubscribeConnection = () => {};
   let stateEvents = 0;
   let testGeneration = 0;
   let testBusy = false;
@@ -191,10 +192,11 @@ export function createRenderer(root, bridge) {
     sourceRenderKey = nextSourceKey;
     refs.routingSource.replaceChildren();
     if (isJS) {
-      refs.routingSource.append(el('div', { class: 'source-callout' }, icon('code'), el('div', {}, el('strong', {}, 'Your JS / TS config is in charge'), el('p', {}, 'It takes precedence over these visual rules. You can edit and save a visual draft, then switch in Settings.')), button('Settings', { className: 'button subtle small', icon: 'arrow' }, () => setView('settings'))));
+      refs.routingSource.append(el('div', { class: 'source-callout' }, icon('code'), el('div', {}, el('strong', {}, 'Your JS / TS config is in charge'), el('p', {}, 'It takes precedence: JS / TS handlers run first, then these visual rules. The JS / TS file controls the default destination.')), button('Settings', { className: 'button subtle small', icon: 'arrow' }, () => setView('settings'))));
     }
     refs.configAlert.hidden = !snapshot.configError;
     if (snapshot.configError) {
+      if (refs.notice.classList.contains('success')) refs.notice.hidden = true;
       refs.configAlert.replaceChildren(icon('warning'), el('div', { class: 'alert-content' }, el('strong', {}, 'Configuration needs attention'), el('p', {}, 'The last good configuration is still routing links.'), el('pre', { class: 'config-error-text' }, String(snapshot.configError))), button('Retry reload', { className: 'button small', icon: 'refresh', disabled: Boolean(actionBusy) }, () => runAction('reload', 'Configuration reloaded.')));
     }
   }
@@ -418,7 +420,7 @@ export function createRenderer(root, bridge) {
         renderRules();
       }
       if (next.configError) notify('Rules saved. The last good configuration is still active.', 'info');
-      else notify(next.isJSConfig ? 'Visual rules saved. Your JS / TS config is still active.' : 'Rules saved. Your next link will use them.');
+      else notify(next.isJSConfig ? 'Visual rules saved after your JS / TS handlers. Your JS / TS config is still active.' : 'Rules saved. Your next link will use them.');
     } catch (error) {
       if (!destroyed) {
         refs.validation.hidden = false;
@@ -614,7 +616,7 @@ export function createRenderer(root, bridge) {
     if (!snapshot) return;
     const isJS = Boolean(snapshot.isJSConfig);
     const configCard = el('div', { class: 'card settings-card' }, settingHeading('code', 'Configuration', 'Choose how your routing rules are managed.'),
-      el('div', { class: 'setting-status' }, badge(isJS ? 'JS / TS active' : 'Visual rules active', isJS ? 'violet' : 'mint'), el('p', {}, isJS ? 'Your JS / TS file takes precedence over saved visual rules.' : 'Your saved visual rules are routing links.')),
+      el('div', { class: 'setting-status' }, badge(isJS ? 'JS / TS active' : 'Visual rules active', isJS ? 'violet' : 'mint'), el('p', {}, isJS ? 'Your JS / TS file takes precedence: its handlers run first, followed by saved visual rules. It also controls the default destination.' : 'Your saved visual rules are routing links.')),
       el('div', { class: 'button-row wrap' },
         button(actionBusy === 'chooseConfig' ? 'Choosing…' : 'Choose JS / TS config', { icon: 'folder', disabled: Boolean(actionBusy) }, () => runAction('chooseConfig')),
         button('Use visual rules', { id: 'use-visual-rules', className: 'button subtle', disabled: !isJS || Boolean(actionBusy) }, () => runAction('useVisualRules', 'Saved visual rules are now active.')),
@@ -642,7 +644,9 @@ export function createRenderer(root, bridge) {
       el('div', { class: 'button-row wrap' }, button('Upstream Finicky', { icon: 'external', className: 'text-button' }, () => runAction('openExternal', undefined, { url: 'https://github.com/johnste/finicky' })), button('MIT license', { icon: 'external', className: 'text-button' }, () => runAction('openExternal', undefined, { url: 'https://github.com/johnste/finicky/blob/main/LICENSE' }))),
       el('p', { class: 'copyright' }, 'Finicky © 2015–2025 John Sterling'),
     );
-    refs.views.settings.replaceChildren(configCard, defaultCard, paths, about);
+    const runtimeCard = el('div', { class: 'card settings-card' }, settingHeading('activity', 'Background router', 'Closing Settings keeps links routing. Quit stops PwrFinicky.'),
+      button('Quit PwrFinicky', { id: 'quit-pwrfinicky', className: 'button subtle', disabled: Boolean(actionBusy) }, () => runAction('quit')));
+    refs.views.settings.replaceChildren(configCard, defaultCard, paths, runtimeCard, about);
   }
 
   async function refreshDefaultStatus() {
@@ -731,6 +735,16 @@ export function createRenderer(root, bridge) {
       if (started || destroyed) return;
       started = true;
       window.addEventListener('keydown', keyHandler);
+      if (typeof bridge?.onConnectionError === 'function') {
+        unsubscribeConnection = bridge.onConnectionError((message) => {
+          if (destroyed) return;
+          sourceRenderKey = '';
+          refs.connection.textContent = 'Router disconnected';
+          refs.connectionStatus.setAttribute('data-status', 'error');
+          refs.configAlert.hidden = false;
+          refs.configAlert.replaceChildren(el('strong', {}, 'The router is not responding.'), el('p', {}, 'Reopen PwrFinicky to resume routing. Your saved configuration is still on disk.'), el('p', { class: 'config-error-text' }, errorMessage(message)));
+        }) || (() => {});
+      }
       if (typeof bridge?.onState === 'function') {
         try {
           const subscription = bridge.onState((next) => {
@@ -748,6 +762,7 @@ export function createRenderer(root, bridge) {
       destroyed = true;
       testGeneration++;
       unsubscribe();
+      unsubscribeConnection();
       window.removeEventListener('keydown', keyHandler);
     },
   };

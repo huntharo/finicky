@@ -8,13 +8,16 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"syscall"
 	"time"
 )
 
 func registry(args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	data, err := exec.CommandContext(ctx, "reg.exe", args...).CombinedOutput()
+	command := exec.CommandContext(ctx, "reg.exe", args...)
+	command.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	data, err := command.CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("registry command failed: %w", err)
 	}

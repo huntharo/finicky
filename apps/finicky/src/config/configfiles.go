@@ -121,6 +121,7 @@ func (cfw *ConfigFileWatcher) GetConfigPaths() []string {
 	for i, path := range configPaths {
 		configPaths[i] = os.ExpandEnv(path)
 		configPaths[i] = strings.ReplaceAll(configPaths[i], "~", homeDir)
+		configPaths[i] = filepath.Clean(configPaths[i])
 	}
 
 	return configPaths

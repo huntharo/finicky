@@ -71,17 +71,28 @@ jobs:
         run: go test ./router ./config ./resolver ./rules ./browser ./diagnostics
       - name: Test build and packaging scripts
         run: npm run test:build
-      - name: Install test browser
-        run: npx playwright install --with-deps chromium
       - name: Test Settings
-        run: |
-          if [[ "$RUNNER_OS" == Linux ]]; then
-            xvfb-run --auto-servernum npm test
-          else
-            npm test
-          fi
+        run: npm test
       - name: Build native router and Settings helper
         run: npm run build -- --platform ${{ matrix.platform }} --arch ${{ matrix.arch }} --skip-api
+      - name: Test packaged Settings and native router together
+        run: |
+          if [[ "$RUNNER_OS" == Linux ]]; then
+            xvfb-run --auto-servernum npm run test:electron
+          else
+            npm run test:electron
+          fi
+      - name: Upload integration evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Smoke-${{ matrix.platform }}-${{ matrix.arch }}
+          path: |
+            apps/pwrfinicky/build/electron-smoke-*/evidence.json
+            apps/pwrfinicky/build/electron-smoke-*/*.png
+            apps/pwrfinicky/build/electron-smoke-*/native.log
+          if-no-files-found: ignore
+          retention-days: 14
       - name: Archive product (preserves bundle symlinks and executable permissions)
         run: npm run package -- --platform ${{ matrix.platform }} --arch ${{ matrix.arch }}
       - uses: actions/upload-artifact@v4

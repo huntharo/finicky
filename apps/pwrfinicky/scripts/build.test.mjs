@@ -96,7 +96,7 @@ for (const platform of ['darwin', 'win32', 'linux']) {
     assert.equal(packing.appBundleId, 'com.pwrdrvr.pwrfinicky.settings');
     const go = f.calls.find(call => call.command === 'go');
     assert.equal(go.args.at(-1), './cmd/pwrfinicky');
-    assert.equal(go.args[go.args.indexOf('-ldflags') + 1], '-s -w -X main.buildVersion=0.2.0');
+    assert.equal(go.args[go.args.indexOf('-ldflags') + 1], `-s -w -X main.buildVersion=0.2.0${platform === 'win32' ? ' -H=windowsgui' : ''}`);
     assert.equal(go.options.env.CGO_ENABLED, platform === 'darwin' ? '1' : '0');
     if (platform === 'darwin') {
       const plist = await readFile(path.join(product, 'Contents', 'Info.plist'), 'utf8');
