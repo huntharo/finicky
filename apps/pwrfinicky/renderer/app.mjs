@@ -224,6 +224,7 @@ export function createRenderer(root, bridge) {
     renderActivity();
     renderSettings();
     setView(activeView, false);
+    if (defaultStatus?.pending && !defaultStatusBusy) refreshDefaultStatus();
   }
 
   function browserSelect(id, value, onChange) {
@@ -623,7 +624,7 @@ export function createRenderer(root, bridge) {
       ),
       el('p', { class: 'field-hint' }, dirty ? 'You have unsaved visual edits. Switching uses your last saved visual rules.' : 'Switching keeps both configuration files. Save visual edits in Routing.'),
     );
-    const defaultDescription = defaultStatusBusy ? 'Checking system settings…' : defaultStatusError ? 'Could not check the default browser.' : defaultStatus?.isDefault ? 'PwrFinicky is your default browser.' : defaultStatus ? 'Send web links through PwrFinicky.' : 'Check which app currently handles web links.';
+    const defaultDescription = defaultStatus?.pending ? 'Waiting for your decision in the macOS confirmation dialog…' : defaultStatusBusy ? 'Checking system settings…' : defaultStatusError ? 'Default-browser registration needs attention.' : defaultStatus?.isDefault ? 'PwrFinicky is your default browser.' : defaultStatus ? 'Send web links through PwrFinicky.' : 'Check which app currently handles web links.';
     const defaultCard = el('div', { class: 'card settings-card' }, settingHeading('globe', 'Default browser', defaultDescription));
     if (defaultStatusError) defaultCard.append(el('p', { class: 'inline-error break-anywhere', role: 'alert' }, defaultStatusError));
     if (defaultStatus) {
@@ -631,7 +632,7 @@ export function createRenderer(root, bridge) {
       defaultCard.append(el('dl', { class: 'protocol-status' }, dataPair('HTTP', handlerName(defaultStatus.http)), dataPair('HTTPS', handlerName(defaultStatus.https))));
     }
     defaultCard.append(el('div', { class: 'button-row wrap' },
-      button(actionBusy === 'setDefaultBrowser' ? 'Setting default…' : defaultStatus?.isDefault ? 'PwrFinicky is default' : 'Set as default browser', { id: 'set-default-browser', icon: defaultStatus?.isDefault ? 'check' : 'globe', className: 'button', disabled: defaultStatus?.isDefault || Boolean(actionBusy) || defaultStatusBusy }, setDefaultBrowser),
+      button(actionBusy === 'setDefaultBrowser' || defaultStatus?.pending ? 'Setting default…' : defaultStatus?.isDefault ? 'PwrFinicky is default' : 'Set as default browser', { id: 'set-default-browser', icon: defaultStatus?.isDefault ? 'check' : 'globe', className: 'button', disabled: defaultStatus?.isDefault || defaultStatus?.pending || Boolean(actionBusy) || defaultStatusBusy }, setDefaultBrowser),
       button('Check again', { className: 'button subtle', icon: 'refresh', disabled: defaultStatusBusy || Boolean(actionBusy) }, refreshDefaultStatus),
     ), el('p', { class: 'field-hint' }, 'Changes system routing only when you press this button.'));
     const paths = el('div', { class: 'card settings-card' }, settingHeading('folder', 'Files & runtime', 'Local configuration, always within reach.'),
@@ -657,7 +658,12 @@ export function createRenderer(root, bridge) {
     try {
       const result = await request('getDefaultStatus');
       if (!result || typeof result.isDefault !== 'boolean') throw new Error('No default-browser status was returned.');
+      const wasPending = defaultStatus?.pending;
       defaultStatus = result;
+      defaultStatusError = result.error || '';
+      if (wasPending && !result.pending) {
+        notify(result.error || (result.isDefault ? 'PwrFinicky is now your default browser.' : 'The default browser was not changed.'), result.error ? 'error' : result.isDefault ? 'success' : 'info');
+      }
     } catch (error) {
       defaultStatusError = errorMessage(error);
     } finally {
@@ -667,15 +673,15 @@ export function createRenderer(root, bridge) {
   }
 
   async function setDefaultBrowser() {
-    if (actionBusy || defaultStatusBusy || defaultStatus?.isDefault) return;
+    if (actionBusy || defaultStatusBusy || defaultStatus?.isDefault || defaultStatus?.pending) return;
     actionBusy = 'setDefaultBrowser';
     renderSettings();
     try {
       const result = await request('setDefaultBrowser');
       if (!result || typeof result.isDefault !== 'boolean') throw new Error('No default-browser status was returned.');
       defaultStatus = result;
-      defaultStatusError = '';
-      notify(defaultStatus.isDefault ? 'PwrFinicky is now your default browser.' : 'PwrFinicky is not yet the default. Complete the system prompt, then check again.', defaultStatus.isDefault ? 'success' : 'info');
+      defaultStatusError = result.error || '';
+      notify(result.error || (result.pending ? 'Confirm the change in the macOS dialog. This page will update automatically.' : result.isDefault ? 'PwrFinicky is now your default browser.' : 'PwrFinicky is not yet the default. Complete the system prompt, then check again.'), result.error ? 'error' : result.isDefault ? 'success' : 'info');
     } catch (error) {
       notify(`Could not set the default browser. ${errorMessage(error)}`, 'error');
     } finally {

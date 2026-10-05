@@ -9,16 +9,21 @@ package nativehost
 void pwrRun(int show);
 void pwrStop(void);
 char *pwrDefaultStatus(void);
-int pwrSetDefault(void);
+void pwrSetDefault(void);
 */
 import "C"
 import (
 	"encoding/json"
-	"fmt"
+	"sync"
 	"unsafe"
 )
 
 var callbacks Callbacks
+var defaultRegistration struct {
+	sync.Mutex
+	pending bool
+	err     string
+}
 
 func Run(show bool, cb Callbacks) {
 	callbacks = cb
@@ -34,14 +39,31 @@ func GetDefaultStatus() (DefaultStatus, error) {
 	defer C.free(unsafe.Pointer(value))
 	var status DefaultStatus
 	err := json.Unmarshal([]byte(C.GoString(value)), &status)
+	defaultRegistration.Lock()
+	status.Pending, status.Error = defaultRegistration.pending, defaultRegistration.err
+	defaultRegistration.Unlock()
 	return status, err
 }
 func SetDefaultBrowser() (DefaultStatus, error) {
-	code := C.pwrSetDefault()
-	if code != 0 {
-		return DefaultStatus{}, fmt.Errorf("macOS rejected default browser registration (%d)", code)
+	defaultRegistration.Lock()
+	start := !defaultRegistration.pending
+	if start {
+		defaultRegistration.pending = true
+		defaultRegistration.err = ""
+	}
+	defaultRegistration.Unlock()
+	if start {
+		C.pwrSetDefault()
 	}
 	return GetDefaultStatus()
+}
+
+//export PwrDefaultFinished
+func PwrDefaultFinished(message *C.char) {
+	defaultRegistration.Lock()
+	defer defaultRegistration.Unlock()
+	defaultRegistration.pending = false
+	defaultRegistration.err = C.GoString(message)
 }
 
 //export PwrOpenURL

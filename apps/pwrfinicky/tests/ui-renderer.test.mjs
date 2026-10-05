@@ -108,6 +108,40 @@ test('Quit PwrFinicky is an explicit Settings action', async (t) => {
   assert.equal(ui.count('quit'), 1);
 });
 
+test('macOS default-browser confirmation remains pending until live status completes', async (t) => {
+  let status = { isDefault: false, http: 'old.browser', https: 'old.browser' };
+  const ui = await fixture(t, { handlers: {
+    getDefaultStatus: () => clone(status),
+    setDefaultBrowser: () => ({ ...status, pending: true }),
+  } });
+  await ui.navigate('settings');
+  await ui.click('Set as default browser');
+  assert.equal(ui.query('#set-default-browser').disabled, true);
+  assert.match(ui.query('.notice').textContent, /Confirm the change in the macOS dialog/);
+  status = { isDefault: true, http: 'com.pwrdrvr.pwrfinicky', https: 'com.pwrdrvr.pwrfinicky' };
+  ui.emit(ui.getState());
+  await flush();
+  assert.match(ui.query('#set-default-browser').textContent, /PwrFinicky is default/);
+  assert.match(ui.query('.notice').textContent, /now your default browser/);
+  assert.equal(ui.count('setDefaultBrowser'), 1);
+});
+
+test('macOS consent errors surface after the asynchronous request completes', async (t) => {
+  let status = { isDefault: false, http: 'old.browser', https: 'old.browser' };
+  const ui = await fixture(t, { handlers: {
+    getDefaultStatus: () => clone(status),
+    setDefaultBrowser: () => ({ ...status, pending: true }),
+  } });
+  await ui.navigate('settings');
+  await ui.click('Set as default browser');
+  status = { ...status, error: 'The user canceled the change.' };
+  ui.emit(ui.getState());
+  await flush();
+  assert.equal(ui.query('#set-default-browser').disabled, false);
+  assert.match(ui.query('.notice.error').textContent, /user canceled/);
+  assert.match(ui.query('#view-settings').textContent, /user canceled/);
+});
+
 test('initial load selects Routing and loads browser profiles without any writes', async (t) => {
   const ui = await fixture(t);
   assert.equal(ui.query('[aria-current="page"]').textContent, 'Routing');

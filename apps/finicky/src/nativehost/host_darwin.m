@@ -6,6 +6,7 @@
 extern void PwrOpenURL(char *,char *,char *,char *,double);
 extern void PwrShowSettings(void);
 extern void PwrQuit(void);
+extern void PwrDefaultFinished(char *);
 
 @interface PwrDelegate:NSObject<NSApplicationDelegate>
 @property BOOL receivedURL;
@@ -66,4 +67,38 @@ char *pwrDefaultStatus(void){@autoreleasepool{
  NSDictionary *result=@{@"http":http,@"https":https,@"isDefault":@((BOOL)([http isEqualToString:identifier]&&[https isEqualToString:identifier]))};
  NSData *json=[NSJSONSerialization dataWithJSONObject:result options:0 error:nil];return strdup([[NSString alloc]initWithData:json encoding:NSUTF8StringEncoding].UTF8String);
 }}
-int pwrSetDefault(void){@autoreleasepool{NSString *identifier=NSBundle.mainBundle.bundleIdentifier;if(!identifier)return -50;OSStatus a=LSSetDefaultHandlerForURLScheme(CFSTR("http"),(__bridge CFStringRef)identifier);OSStatus b=LSSetDefaultHandlerForURLScheme(CFSTR("https"),(__bridge CFStringRef)identifier);LSSetDefaultHandlerForURLScheme(CFSTR("pwrfinicky"),(__bridge CFStringRef)identifier);return a!=0?a:b;}}
+static void pwrSetScheme(NSURL *applicationURL, NSArray<NSString *> *schemes, NSUInteger index) {
+ if (index == schemes.count) {
+  PwrDefaultFinished(NULL);
+  return;
+ }
+ [NSWorkspace.sharedWorkspace setDefaultApplicationAtURL:applicationURL
+                                 toOpenURLsWithScheme:schemes[index]
+                                    completionHandler:^(NSError *error) {
+  if (error) {
+   PwrDefaultFinished((char *)error.localizedDescription.UTF8String);
+   return;
+  }
+  dispatch_async(dispatch_get_main_queue(), ^{ pwrSetScheme(applicationURL, schemes, index + 1); });
+ }];
+}
+
+void pwrSetDefault(void) {
+ // NSWorkspace owns the asynchronous system-consent dialog. Keep the native
+ // event loop and RPC responsive while the user decides; completion is polled
+ // by Settings instead of incorrectly treating an immediate return as success.
+ dispatch_async(dispatch_get_main_queue(), ^{
+  NSURL *applicationURL = NSBundle.mainBundle.bundleURL;
+  if (![applicationURL.pathExtension isEqualToString:@"app"]) {
+   PwrDefaultFinished("Launch the packaged PwrFinicky.app before setting the default browser.");
+   return;
+  }
+  OSStatus registered = LSRegisterURL((__bridge CFURLRef)applicationURL, true);
+  if (registered != noErr) {
+   NSString *message = [NSString stringWithFormat:@"macOS could not register PwrFinicky (%d).", (int)registered];
+   PwrDefaultFinished((char *)message.UTF8String);
+   return;
+  }
+  pwrSetScheme(applicationURL, @[@"http", @"https", @"pwrfinicky"], 0);
+ });
+}
