@@ -13,6 +13,43 @@ No renderer bundler is used: `main.cjs`, `preload.cjs`, and the complete `render
 
 ## Build and start
 
+### Worktree buttons
+
+Select **PwrFinicky** from the repository's environment picker. The checked-in
+`.codex/environments/environment.toml` uses the same platform-specific format as
+PwrAgent and provides these actions on macOS, Windows and Linux:
+
+| Button | Behavior |
+| --- | --- |
+| Start | Opens Settings through the native router; builds first if the app is missing. |
+| Build | Builds the native router and Electron Settings without launching them. |
+| Stop | Quits only this worktree's instance through its authenticated RPC endpoint. |
+| Test | Generates the config API and runs build-script, Settings and portable Go tests without opening a UI. |
+| Package | Builds and creates a local ZIP (macOS) or tar.gz (Windows/Linux). |
+
+New worktree setup selects Node from `.nvmrc`, installs locked npm dependencies,
+generates the embedded config API and downloads Go modules. Install nvm
+(nvm-windows on Windows), Go 1.24+ and, on macOS, Xcode Command Line Tools once
+on the machine. Setup fails if those tools are missing; it never launches the app.
+
+The buttons use `apps/pwrfinicky/build/worktree-data` for configuration and runtime
+state. Each checkout has its own instance and settings; your installed app's
+configuration is not imported. **Stop before rebuilding a running worktree app**,
+then use Build and Start to pick up source changes. Clicking Start on an already
+running instance opens its Settings again. Local button builds use ad-hoc signing
+and do not notarize, install or select a default browser. Package does not publish
+a release. Cleanup removes only the two npm dependency directories and preserves
+the app and worktree settings.
+
+The same actions can be run from any working directory with:
+
+```sh
+node /path/to/finicky/apps/pwrfinicky/scripts/worktree.mjs setup
+node /path/to/finicky/apps/pwrfinicky/scripts/worktree.mjs start
+```
+
+### Terminal commands
+
 From the repository root:
 
 ```sh
