@@ -40,6 +40,20 @@ export async function worktree(action, {
       return;
     case 'build':
       return build();
+    case 'install': {
+      if (platform !== 'darwin') throw new Error('Build and Install is currently supported only on macOS');
+      const { install, installedApp, requireStopped } = await import('./install.mjs');
+      await requireStopped(path.join(root, 'build', 'PwrFinicky.app'), { execute });
+      await requireStopped(installedApp, { execute });
+      await build();
+      return install({ root, platform, execute });
+    }
+    case 'start-installed': {
+      if (platform !== 'darwin') throw new Error('Start Installed is currently supported only on macOS');
+      const { installedApp } = await import('./install.mjs');
+      await access(installedApp);
+      return execute('/usr/bin/open', ['-a', installedApp], { cwd: root });
+    }
     case 'start':
       if (!await exists(executable)) await build();
       report(`Starting PwrFinicky Settings with worktree data: ${dataDir}`);
@@ -64,7 +78,7 @@ export async function worktree(action, {
       await build();
       return npm(['run', 'package']);
     default:
-      throw new Error(`Unknown worktree action: ${action}; use setup, start, build, stop, test, or package`);
+      throw new Error(`Unknown worktree action: ${action}; use setup, start, build, install, start-installed, stop, test, or package`);
   }
 }
 

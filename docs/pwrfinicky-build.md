@@ -23,9 +23,27 @@ PwrAgent and provides these actions on macOS, Windows and Linux:
 | --- | --- |
 | Start | Opens Settings through the native router; builds first if the app is missing. |
 | Build | Builds the native router and Electron Settings without launching them. |
-| Stop | Quits only this worktree's instance through its authenticated RPC endpoint. |
+| Stop | Quits this worktree's router and the Settings child it launched through its authenticated RPC endpoint. |
 | Test | Generates the config API and runs build-script, Settings and portable Go tests without opening a UI. |
 | Package | Builds and creates a local ZIP (macOS) or tar.gz (Windows/Linux). |
+
+macOS also provides **Build and Install** and **Start Installed**. Quit PwrFinicky
+and close its Settings first; Build and Install checks exact executable paths and
+refuses to replace a running bundle. It builds with ad-hoc signing, copies the
+complete bundle into a staging directory under `/Applications`, verifies the
+signature, then replaces only `/Applications/PwrFinicky.app`. An existing bundle
+must have the expected PwrFinicky identity. If installation or registration fails,
+the previous app is restored. No process is signaled or quit by name.
+
+Installation registers the stable app path with Launch Services without selecting
+a default browser or opening a window. **Start Installed** opens that app using
+its normal PwrFinicky data directory; **Start** uses this worktree's separate
+settings. Open the installed app and select **Set as default browser** there to
+route real links to the stable application. Browser consent covers HTTP and HTTPS;
+the private `pwrfinicky:` scheme is separate from browser selection.
+Settings shows the selected HTTP/HTTPS application paths. Default-browser status
+compares those paths as well as bundle IDs, so another worktree copy with the
+same ID does not disable the installed app's registration button.
 
 New worktree setup selects Node from `.nvmrc`, installs locked npm dependencies,
 generates the embedded config API and downloads Go modules. Install nvm
@@ -37,7 +55,8 @@ state. Each checkout has its own instance and settings; your installed app's
 configuration is not imported. **Stop before rebuilding a running worktree app**,
 then use Build and Start to pick up source changes. Clicking Start on an already
 running instance opens its Settings again. Local button builds use ad-hoc signing
-and do not notarize, install or select a default browser. Package does not publish
+and do not notarize or select a default browser. Build and Package keep their
+output in this checkout; Build and Install explicitly installs it. Package does not publish
 a release. Cleanup removes only the two npm dependency directories and preserves
 the app and worktree settings.
 
@@ -142,10 +161,17 @@ Archives go to `build/artifacts/PwrFinicky-<platform>-<arch>-<version>.zip` on m
 ```sh
 npm run test:build
 npm test
+npm run test:lifecycle
 npm run test:electron
 ```
 
 The build-script tests use isolated fixtures under the ignored `build/` directory. They validate layouts, generated API copies, native launch paths, argument preservation, Go target mapping, helper associations, signing order, and failure behavior. They do not substitute for launching the integrated native host and Settings UI. `npm test` runs the application tests supplied with the Settings implementation.
+
+`test:lifecycle` requires a build. It starts a headless router with a disposable
+data directory and a harmless Go program in place of Settings. An authenticated
+quit must stop the child launched by the router while preserving an independent
+process running the same helper executable. It opens no Electron window and saves
+its result under `build/router-lifecycle-*/evidence.json`.
 
 `test:electron` requires a complete build. It launches the packaged Settings helper and real Go router with a disposable data directory, saves visual rules, previews routing, verifies invalid JS/TS edits retain the last working config, recovers from an atomic replacement, closes Settings, and dispatches a URL with Settings closed. It uses dry-run mode and never changes default handlers. On macOS it sends real URL AppleEvents to both an already running router and a cold app launch, checking neither opens Settings; Windows/Linux exercise the second-process URL forwarding entrypoint. Screenshots, process IDs, timing evidence, and logs remain under `build/electron-smoke-*`. Cleanup targets only its captured child processes and authenticated router endpoint. Run under `xvfb-run --auto-servernum` on a headless Linux desktop.
 

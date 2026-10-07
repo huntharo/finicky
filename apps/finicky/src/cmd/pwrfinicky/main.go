@@ -140,9 +140,32 @@ func run() error {
 		return json.NewEncoder(os.Stdout).Encode(result)
 	}
 	var uiMu sync.Mutex
+	uiCommands := make(map[*exec.Cmd]struct{})
+	uiStopping := false
+	defer func() {
+		uiMu.Lock()
+		uiStopping = true
+		commands := make([]*exec.Cmd, 0, len(uiCommands))
+		for command := range uiCommands {
+			commands = append(commands, command)
+		}
+		uiMu.Unlock()
+		// Only handles captured from children of this router are owned by it.
+		// Never look up or signal Electron processes by name or guessed PID.
+		for _, command := range commands {
+			if runtime.GOOS == "windows" {
+				_ = command.Process.Kill()
+			} else {
+				_ = command.Process.Signal(syscall.SIGTERM)
+			}
+		}
+	}()
 	showUI := func() error {
 		uiMu.Lock()
 		defer uiMu.Unlock()
+		if uiStopping {
+			return nil
+		}
 		path := *uiPath
 		if path == "" {
 			executable, _ := os.Executable()
@@ -171,7 +194,13 @@ func run() error {
 		if err := command.Start(); err != nil {
 			return err
 		}
-		go command.Wait()
+		uiCommands[command] = struct{}{}
+		go func() {
+			_ = command.Wait()
+			uiMu.Lock()
+			delete(uiCommands, command)
+			uiMu.Unlock()
+		}()
 		return nil
 	}
 	controls := router.Controls{ShowSettings: showUI, Quit: nativehost.Stop, GetDefaultStatus: func() (any, error) { return nativehost.GetDefaultStatus() }, SetDefaultBrowser: func() (any, error) { return nativehost.SetDefaultBrowser() }}

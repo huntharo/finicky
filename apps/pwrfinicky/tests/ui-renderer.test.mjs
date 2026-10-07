@@ -142,6 +142,42 @@ test('macOS consent errors surface after the asynchronous request completes', as
   assert.match(ui.query('#view-settings').textContent, /user canceled/);
 });
 
+test('verified web defaults clear a stale registration error after consent', async (t) => {
+  let status = { isDefault: false, http: 'old.browser', https: 'old.browser' };
+  const ui = await fixture(t, { handlers: {
+    getDefaultStatus: () => clone(status),
+    setDefaultBrowser: () => ({ ...status, pending: true }),
+  } });
+  await ui.navigate('settings');
+  await ui.click('Set as default browser');
+  status = { isDefault: true, http: 'com.pwrdrvr.pwrfinicky', https: 'com.pwrdrvr.pwrfinicky', error: 'The file couldn’t be opened.' };
+  ui.emit(ui.getState());
+  await flush();
+  assert.match(ui.query('.notice.success').textContent, /now your default browser/);
+  assert.equal(ui.query('#view-settings .inline-error'), null);
+  assert.match(ui.query('#view-settings').textContent, /PwrFinicky is your default browser/);
+  assert.doesNotMatch(ui.query('#view-settings').textContent, /couldn’t be opened/);
+});
+
+test('already-selected web defaults do not display a stale error on initial check', async (t) => {
+  const ui = await fixture(t, { handlers: {
+    getDefaultStatus: () => ({ isDefault: true, http: 'com.pwrdrvr.pwrfinicky', https: 'com.pwrdrvr.pwrfinicky', error: 'An earlier attempt failed.' }),
+  } });
+  await ui.navigate('settings');
+  assert.equal(ui.query('#view-settings .inline-error'), null);
+  assert.equal(ui.query('#set-default-browser').disabled, true);
+  assert.equal(ui.count('setDefaultBrowser'), 0);
+});
+
+test('handler application paths explain why another PwrFinicky copy is selected', async (t) => {
+  const ui = await fixture(t, { handlers: {
+    getDefaultStatus: () => ({ isDefault: false, http: 'com.pwrdrvr.pwrfinicky', https: 'com.pwrdrvr.pwrfinicky', httpPath: '/checkout/build/PwrFinicky.app', httpsPath: '/checkout/build/PwrFinicky.app' }),
+  } });
+  await ui.navigate('settings');
+  assert.equal(ui.query('#set-default-browser').disabled, false);
+  assert.match(ui.query('#view-settings').textContent, /HTTP application.*\/checkout\/build\/PwrFinicky.app/);
+});
+
 test('initial load selects Routing and loads browser profiles without any writes', async (t) => {
   const ui = await fixture(t);
   assert.equal(ui.query('[aria-current="page"]').textContent, 'Routing');

@@ -61,10 +61,18 @@ static PwrDelegate *delegate;
 void pwrRun(int show){@autoreleasepool{[NSApplication sharedApplication];[NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];delegate=[PwrDelegate new];delegate.showOnStart=show;NSApp.delegate=delegate;[NSApp run];}}
 void pwrStop(void){dispatch_async(dispatch_get_main_queue(),^{[NSApp stop:nil];NSEvent *event=[NSEvent otherEventWithType:NSEventTypeApplicationDefined location:NSZeroPoint modifierFlags:0 timestamp:0 windowNumber:0 context:nil subtype:0 data1:0 data2:0];[NSApp postEvent:event atStart:YES];});}
 char *pwrDefaultStatus(void){@autoreleasepool{
- NSString *http=CFBridgingRelease(LSCopyDefaultHandlerForURLScheme(CFSTR("http")))?:@"";
- NSString *https=CFBridgingRelease(LSCopyDefaultHandlerForURLScheme(CFSTR("https")))?:@"";
+ NSURL *httpURL=[NSWorkspace.sharedWorkspace URLForApplicationToOpenURL:[NSURL URLWithString:@"http:"]];
+ NSURL *httpsURL=[NSWorkspace.sharedWorkspace URLForApplicationToOpenURL:[NSURL URLWithString:@"https:"]];
+ NSString *http=httpURL?[NSBundle bundleWithURL:httpURL].bundleIdentifier?:@"":@"";
+ NSString *https=httpsURL?[NSBundle bundleWithURL:httpsURL].bundleIdentifier?:@"":@"";
  NSString *identifier=NSBundle.mainBundle.bundleIdentifier?:@"com.pwrdrvr.pwrfinicky";
- NSDictionary *result=@{@"http":http,@"https":https,@"isDefault":@((BOOL)([http isEqualToString:identifier]&&[https isEqualToString:identifier]))};
+ NSURL *current=NSBundle.mainBundle.bundleURL.URLByStandardizingPath.URLByResolvingSymlinksInPath;
+ // Worktrees and the installed app share a product ID. Compare their paths as
+ // well so an installed build can replace a worktree as the actual handler.
+ BOOL selected=[http isEqualToString:identifier]&&[https isEqualToString:identifier]
+  &&[httpURL.URLByStandardizingPath.URLByResolvingSymlinksInPath isEqual:current]
+  &&[httpsURL.URLByStandardizingPath.URLByResolvingSymlinksInPath isEqual:current];
+ NSDictionary *result=@{@"http":http,@"https":https,@"httpPath":httpURL.path?:@"",@"httpsPath":httpsURL.path?:@"",@"isDefault":@(selected)};
  NSData *json=[NSJSONSerialization dataWithJSONObject:result options:0 error:nil];return strdup([[NSString alloc]initWithData:json encoding:NSUTF8StringEncoding].UTF8String);
 }}
 static void pwrSetScheme(NSURL *applicationURL, NSArray<NSString *> *schemes, NSUInteger index) {
@@ -76,7 +84,9 @@ static void pwrSetScheme(NSURL *applicationURL, NSArray<NSString *> *schemes, NS
                                  toOpenURLsWithScheme:schemes[index]
                                     completionHandler:^(NSError *error) {
   if (error) {
-   PwrDefaultFinished((char *)error.localizedDescription.UTF8String);
+   NSString *message = [NSString stringWithFormat:@"Could not set the %@ handler (%@ %ld): %@",
+                        schemes[index], error.domain, (long)error.code, error.localizedDescription];
+   PwrDefaultFinished((char *)message.UTF8String);
    return;
   }
   dispatch_async(dispatch_get_main_queue(), ^{ pwrSetScheme(applicationURL, schemes, index + 1); });
@@ -99,6 +109,8 @@ void pwrSetDefault(void) {
    PwrDefaultFinished((char *)message.UTF8String);
    return;
   }
-  pwrSetScheme(applicationURL, @[@"http", @"https", @"pwrfinicky"], 0);
+  // Browser selection covers web links. The app's private URL scheme is
+  // declared in its plist, but is not part of default-browser consent.
+  pwrSetScheme(applicationURL, @[@"http", @"https"], 0);
  });
 }

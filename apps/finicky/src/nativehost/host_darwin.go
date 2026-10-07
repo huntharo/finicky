@@ -14,6 +14,7 @@ void pwrSetDefault(void);
 import "C"
 import (
 	"encoding/json"
+	"log/slog"
 	"sync"
 	"unsafe"
 )
@@ -40,6 +41,11 @@ func GetDefaultStatus() (DefaultStatus, error) {
 	var status DefaultStatus
 	err := json.Unmarshal([]byte(C.GoString(value)), &status)
 	defaultRegistration.Lock()
+	// A completed request must reflect the current HTTP/HTTPS handlers rather
+	// than retain a failure from an earlier registration attempt.
+	if err == nil && status.IsDefault && !defaultRegistration.pending {
+		defaultRegistration.err = ""
+	}
 	status.Pending, status.Error = defaultRegistration.pending, defaultRegistration.err
 	defaultRegistration.Unlock()
 	return status, err
@@ -60,10 +66,14 @@ func SetDefaultBrowser() (DefaultStatus, error) {
 
 //export PwrDefaultFinished
 func PwrDefaultFinished(message *C.char) {
+	result := C.GoString(message)
 	defaultRegistration.Lock()
-	defer defaultRegistration.Unlock()
 	defaultRegistration.pending = false
-	defaultRegistration.err = C.GoString(message)
+	defaultRegistration.err = result
+	defaultRegistration.Unlock()
+	if result != "" {
+		slog.Warn("Default browser registration failed", "error", result)
+	}
 }
 
 //export PwrOpenURL

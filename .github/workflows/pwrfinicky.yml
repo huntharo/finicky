@@ -75,6 +75,8 @@ jobs:
         run: npm test
       - name: Build native router and Settings helper
         run: npm run build -- --platform ${{ matrix.platform }} --arch ${{ matrix.arch }} --skip-api
+      - name: Test router-owned Settings shutdown without an Electron window
+        run: npm run test:lifecycle
       - name: Test packaged Settings and native router together
         run: |
           if [[ "$RUNNER_OS" == Linux ]]; then
@@ -91,6 +93,7 @@ jobs:
             apps/pwrfinicky/build/electron-smoke-*/evidence.json
             apps/pwrfinicky/build/electron-smoke-*/*.png
             apps/pwrfinicky/build/electron-smoke-*/native.log
+            apps/pwrfinicky/build/router-lifecycle-*/evidence.json
           if-no-files-found: ignore
           retention-days: 14
       - name: Archive product (preserves bundle symlinks and executable permissions)
